@@ -5,6 +5,20 @@ import type { Logger } from './logger';
 export type JobStatus =
   'NotStarted' | 'InProgress' | 'Completed' | 'Failed' | 'Cancelled' | 'Deduped' | string;
 
+/** GET /v1/connections item shape — field names/values unconfirmed against a real tenant (V1-SCOPE.md §3). */
+export interface FabricConnection {
+  id: string;
+  displayName: string;
+  connectivityType: string;
+  gatewayId?: string;
+  connectionDetails?: { type?: string; path?: string };
+}
+
+/** GatePulse only makes sense for gateway-routed SQL connections — see README §1 (the scenario itself). */
+export function isGatewaySqlConnection(c: FabricConnection): boolean {
+  return c.connectivityType === 'OnPremisesGateway' && /sql/i.test(c.connectionDetails?.type ?? '');
+}
+
 export interface JobInstance {
   id: string;
   itemId: string;
@@ -191,23 +205,41 @@ export class FabricClient {
    * (ensurePipeline, provision.ts) — see V1-SCOPE.md §1.
    */
   async listItems(type?: string): Promise<{ id: string; displayName: string; type: string }[]> {
+    return this.paginate(
+      `/v1/workspaces/${this.cfg.workspaceId}/items${type ? `?type=${type}` : ''}`,
+      'item.list',
+    );
+  }
+
+  /**
+   * GET /v1/connections — tenant-wide, not scoped to a workspace: a gateway connection is
+   * referenced by GUID from a pipeline, not listed as a workspace item. Used to let the user pick
+   * a connection instead of typing its GUID — see V1-SCOPE.md §3 (endpoint shape unconfirmed
+   * against a real tenant, same spirit as the hypotheses in README §6).
+   */
+  async listConnections(): Promise<FabricConnection[]> {
+    return this.paginate<FabricConnection>('/v1/connections', 'connection.list');
+  }
+
+  /** Follows `continuationUri` pages, capped defensively (a single workspace/tenant call is never expected to need it). */
+  private async paginate<T>(path: string, label: string): Promise<T[]> {
     const MAX_PAGES = 50;
-    const items: { id: string; displayName: string; type: string }[] = [];
-    let apiPath: string | undefined =
-      `/v1/workspaces/${this.cfg.workspaceId}/items${type ? `?type=${type}` : ''}`;
+    const out: T[] = [];
+    let apiPath: string | undefined = path;
     let page = 0;
     while (apiPath && page < MAX_PAGES) {
-      const res: HttpResult<{
-        value?: { id: string; displayName: string; type: string }[];
-        continuationUri?: string;
-      }> = await this.request('GET', apiPath, { label: 'item.list', expected: [200] });
-      items.push(...(res.body.value ?? []));
+      const res: HttpResult<{ value?: T[]; continuationUri?: string }> = await this.request(
+        'GET',
+        apiPath,
+        { label, expected: [200] },
+      );
+      out.push(...(res.body.value ?? []));
       const next: string | undefined = res.body.continuationUri;
       apiPath =
         next && next.startsWith(this.cfg.apiBaseUrl) ? next.slice(this.cfg.apiBaseUrl.length) : undefined;
       page++;
     }
-    return items;
+    return out;
   }
 
   async getItem(itemId: string) {

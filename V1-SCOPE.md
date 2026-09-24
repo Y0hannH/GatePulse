@@ -406,19 +406,24 @@ l'implémentation, pas un doute de conception.
    (`errors.ts`), relâchement de `checkConfig` sur `pipelineId`.
 3. ~~Définir le modèle de settings multi-tenant~~ — fait, cf. section 2 ci-dessus.
 4. ~~Concevoir la découverte dynamique des connexions/pipelines~~ — fait, cf. section 3 ci-dessus.
-   Reste à implémenter : `listConnections` (`fabricClient.ts`), commandes `GatePulse: Pick
-   Connection` / `Pick Pipeline (override)` / `Refresh Connections`, dégradation en saisie libre si
-   le listing échoue.
+   **Implémenté (2026-09-24)** : `listConnections`/`isGatewaySqlConnection` (`fabricClient.ts`),
+   commandes `GatePulse: Pick Connection` / `Pick Pipeline (Override)` / `Refresh Connections`
+   (`extension.ts`), toutes en command palette pour l'instant — pas encore de bouton « Parcourir… »
+   ni de sélecteur dans le panel lui-même (délibérément laissé au point 4, cf. division déjà posée :
+   point 3 = mécanisme/commandes, point 4 = widget dans le panel). Dégradation en saisie libre
+   testée (liste vide → message informatif, pas de blocage). Couverture offline ajoutée dans
+   `test/provision-selftest.ts` (mock `/v1/connections`).
 5. ~~Spécifier l'UX v1 du panel~~ — fait, cf. section 4 ci-dessus. Reste à implémenter : retrait des
    boutons/rendus P1-P4 du webview, bandeau d'alerte + section Diagnostics repliée, sélecteur de
    tenant + picker de connexion dans le panel, bandeau de provisioning, historique de requêtes
    (`globalState`, cap 50), export CSV.
 6. ~~`git init` local (sans remote)~~ — fait, `git log` : 3 commits (repo initial, point 1, point 2).
-7. **Implémenté (2026-09-24) : point 1** (`ensurePipeline`/`listItems`/`ErrorKind: 'provisioning'`/
-   `checkConfig` relâché) et **point 2** (`gatepulse.tenants`, `buildConfigForTenant`,
-   `checkTenants`, commandes `switchTenant`/`addTenant`) — typecheck/lint/compile/test verts à
-   chaque étape, committés séparément. `runSingle` a été extrait implicitement en restant appelé
-   depuis `scenarios.ts` (pas encore déplacé vers un module dédié — cf. correction plus haut ; à
-   faire au moment du point 4, pas bloquant avant). Restent à implémenter : point 3 (découverte
-   dynamique) et point 4 (UX du panel, y compris le retrait des boutons P1-P4 et l'extraction de
+7. **Implémenté (2026-09-24) : points 1, 2 et 3** — typecheck/lint/compile/test verts à chaque
+   étape, committés séparément, avec une suite de tests offline dédiée
+   (`test/provision-selftest.ts`, mock Fabric Items + Connections API, 26 assertions). `runSingle`
+   n'a pas encore été extrait de `scenarios.ts` (cf. correction plus haut) — à faire au moment du
+   point 4, pas bloquant avant. **Non encore vérifié à la main** : le panel VS Code (webview,
+   sign-in réel, run contre un vrai tenant Fabric) — aucun outil ne permet de le simuler depuis ce
+   poste de travail ; seule la logique métier est couverte par les tests offline. Reste à
+   implémenter : point 4 (UX du panel, y compris le retrait des boutons P1-P4 et l'extraction de
    `runSingle`).

@@ -4,6 +4,8 @@ import * as vscode from 'vscode';
 
 import type { AuthFlow, ParameterNames, ParameterPayloadFormat, TenantEntry } from '../core/config';
 import { buildConfigForTenant, isGuid } from '../core/config';
+import type { FabricConnection } from '../core/fabricClient';
+import { isGatewaySqlConnection } from '../core/fabricClient';
 import type { LogEntry, LogSink } from '../core/logger';
 import { formatEntry } from '../core/logger';
 import type { Session } from '../core/session';
@@ -69,10 +71,26 @@ function getActiveTenant(context: vscode.ExtensionContext, tenants: TenantEntry[
   return tenants.find((t) => t.alias === activeAlias) ?? tenants[0] ?? EMPTY_TENANT;
 }
 
+/** Merges a patch into the active tenant's `gatepulse.tenants` entry — Global scope, never Workspace (V1-SCOPE.md §2/§3). */
+async function updateActiveTenant(
+  context: vscode.ExtensionContext,
+  patch: Partial<Omit<TenantEntry, 'alias' | 'tenantId' | 'workspaceId'>>,
+): Promise<void> {
+  const tenants = readTenants();
+  const active = getActiveTenant(context, tenants);
+  const updated = tenants.map((t) => (t.alias === active.alias ? { ...t, ...patch } : t));
+  await vscode.workspace
+    .getConfiguration('gatepulse')
+    .update('tenants', updated, vscode.ConfigurationTarget.Global);
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   const channel = vscode.window.createOutputChannel('GatePulse');
   context.subscriptions.push(channel);
   let session: Session | undefined;
+  // Resolved once per session (in memory only) — invalidated on tenant switch, same as `session`
+  // itself, since the token used to call /v1/connections is the active tenant's (V1-SCOPE.md §3).
+  let cachedConnections: FabricConnection[] | undefined;
 
   const authUi: AuthUi = {
     showDeviceCode(info) {
@@ -119,7 +137,24 @@ export function activate(context: vscode.ExtensionContext): void {
   /** Invalidates the cached session (tenant or settings changed) and refreshes the panel if open. */
   const invalidateSession = (): void => {
     session = undefined; // rebuilt lazily; tokens are in memory, so sign-in happens again
+    cachedConnections = undefined;
     SqlPanel.current?.refreshDefaults();
+  };
+
+  /** Never throws: a listing failure degrades to "no connections found", never blocks manual entry. */
+  const getConnections = async (): Promise<FabricConnection[]> => {
+    if (cachedConnections) return cachedConnections;
+    const s = getSession();
+    try {
+      cachedConnections = (await s.client.listConnections()).filter(isGatewaySqlConnection);
+    } catch (err) {
+      s.logger.warn(
+        'connections.listFailed',
+        `Could not list Fabric connections: ${(err as Error).message}`,
+      );
+      return [];
+    }
+    return cachedConnections;
   };
 
   context.subscriptions.push(
@@ -186,6 +221,67 @@ export function activate(context: vscode.ExtensionContext): void {
         .update('tenants', [...existing, { alias, tenantId, workspaceId }], vscode.ConfigurationTarget.Global);
       await context.globalState.update(ACTIVE_TENANT_KEY, alias);
       invalidateSession();
+    }),
+    vscode.commands.registerCommand('gatepulse.pickConnection', async () => {
+      const connections = await getConnections();
+      if (connections.length === 0) {
+        void vscode.window.showInformationMessage(
+          'GatePulse : aucune connexion gateway SQL trouvée (ou liste indisponible) — saisir le GUID à la main dans le panel.',
+        );
+        return;
+      }
+      const picked = await vscode.window.showQuickPick(
+        connections.map((c) => ({
+          label: c.displayName,
+          description: c.id,
+          detail: c.gatewayId ? `gateway ${c.gatewayId}` : undefined,
+          connection: c,
+        })),
+        { placeHolder: 'GatePulse : choisir une connexion gateway (GUID copié dans le presse-papiers)' },
+      );
+      if (!picked) return;
+      await vscode.env.clipboard.writeText(picked.connection.id);
+      const choice = await vscode.window.showInformationMessage(
+        `GatePulse : GUID de "${picked.connection.displayName}" copié dans le presse-papiers.`,
+        'Enregistrer comme connexion par défaut pour ce tenant',
+      );
+      if (choice) {
+        await updateActiveTenant(context, { connectionGuid: picked.connection.id });
+        invalidateSession();
+      }
+    }),
+    vscode.commands.registerCommand('gatepulse.pickPipelineOverride', async () => {
+      const s = getSession();
+      let items: { id: string; displayName: string; type: string }[];
+      try {
+        items = await s.client.listItems('DataPipeline');
+      } catch (err) {
+        void vscode.window.showErrorMessage(
+          `GatePulse : impossible de lister les pipelines du workspace (${(err as Error).message}).`,
+        );
+        return;
+      }
+      if (items.length === 0) {
+        void vscode.window.showInformationMessage('GatePulse : aucun pipeline trouvé dans ce workspace.');
+        return;
+      }
+      const picked = await vscode.window.showQuickPick(
+        items.map((i) => ({ label: i.displayName, description: i.id, item: i })),
+        { placeHolder: 'GatePulse : override manuel — choisir le pipeline pour ce tenant' },
+      );
+      if (!picked) return;
+      await updateActiveTenant(context, { pipelineId: picked.item.id });
+      invalidateSession();
+      void vscode.window.showInformationMessage(
+        `GatePulse : pipeline "${picked.item.displayName}" défini comme override pour ce tenant.`,
+      );
+    }),
+    vscode.commands.registerCommand('gatepulse.refreshConnections', async () => {
+      cachedConnections = undefined;
+      const connections = await getConnections();
+      void vscode.window.showInformationMessage(
+        `GatePulse : ${connections.length} connexion(s) gateway SQL trouvée(s).`,
+      );
     }),
   );
 }

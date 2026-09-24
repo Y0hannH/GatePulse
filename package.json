@@ -37,6 +37,18 @@
       {
         "command": "gatepulse.addTenant",
         "title": "GatePulse: Add Tenant"
+      },
+      {
+        "command": "gatepulse.pickConnection",
+        "title": "GatePulse: Pick Connection"
+      },
+      {
+        "command": "gatepulse.pickPipelineOverride",
+        "title": "GatePulse: Pick Pipeline (Override)"
+      },
+      {
+        "command": "gatepulse.refreshConnections",
+        "title": "GatePulse: Refresh Connections"
       }
     ],
     "configuration": {

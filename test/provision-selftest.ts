@@ -9,7 +9,8 @@ import { randomUUID } from 'crypto';
 import * as http from 'http';
 
 import { buildConfigForTenant, checkTenants, mergeConfig } from '../src/core/config';
-import { FabricClient } from '../src/core/fabricClient';
+import type { FabricConnection } from '../src/core/fabricClient';
+import { FabricClient, isGatewaySqlConnection } from '../src/core/fabricClient';
 import { ConsoleSink, Logger } from '../src/core/logger';
 import { ensurePipeline, GATEPULSE_PIPELINE_NAME } from '../src/core/provision';
 
@@ -129,6 +130,29 @@ function makeClient(apiBaseUrl: string): FabricClient {
   return new FabricClient(cfg, async () => 'fake-token', logger);
 }
 
+/** In-process mock of GET /v1/connections (tenant-wide, single page — pagination is already covered via listItems). */
+function startConnectionsMock(
+  connections: FabricConnection[],
+): Promise<{ url: string; close: () => void }> {
+  const server = http.createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/v1/connections') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ value: connections }));
+      return;
+    }
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ errorCode: 'NotFound', message: req.url }));
+  });
+  return new Promise((resolve) =>
+    server.listen(0, () =>
+      resolve({
+        url: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
+        close: () => server.close(),
+      }),
+    ),
+  );
+}
+
 function expect(label: string, actual: unknown, expected: unknown) {
   const ok = actual === expected;
   console.log(
@@ -243,4 +267,35 @@ void (async () => {
   );
   expect('buildConfigForTenant: falls back to global clientId', cfgFallback.clientId, 'global-client-id');
   expect('buildConfigForTenant: pipelineId empty by default', cfgFallback.pipelineId, '');
+
+  console.log('\n--- listConnections / isGatewaySqlConnection (V1 point 3) ---');
+  {
+    const gatewaySql: FabricConnection = {
+      id: randomUUID(),
+      displayName: 'OnPrem SQL',
+      connectivityType: 'OnPremisesGateway',
+      gatewayId: randomUUID(),
+      connectionDetails: { type: 'SQL' },
+    };
+    const cloudSql: FabricConnection = {
+      id: randomUUID(),
+      displayName: 'Cloud SQL (not gateway)',
+      connectivityType: 'ShareableCloud',
+      connectionDetails: { type: 'SQL' },
+    };
+    const gatewayNonSql: FabricConnection = {
+      id: randomUUID(),
+      displayName: 'OnPrem SharePoint',
+      connectivityType: 'OnPremisesGateway',
+      connectionDetails: { type: 'SharePointOnlineList' },
+    };
+    const mock = await startConnectionsMock([gatewaySql, cloudSql, gatewayNonSql]);
+    const client = makeClient(mock.url);
+    const all = await client.listConnections();
+    expect('listConnections: returns all 3', all.length, 3);
+    const filtered = all.filter(isGatewaySqlConnection);
+    expect('isGatewaySqlConnection: keeps only the gateway SQL one', filtered.length, 1);
+    expect('isGatewaySqlConnection: correct one kept', filtered[0]?.id, gatewaySql.id);
+    mock.close();
+  }
 })();
