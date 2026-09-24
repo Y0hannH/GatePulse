@@ -404,20 +404,21 @@ l'implémentation, pas un doute de conception.
 2. ~~Concevoir le flux d'auto-provisioning~~ — fait, cf. section 1 ci-dessus. Reste à implémenter :
    `listItems` (`fabricClient.ts`), `ensurePipeline` (`provision.ts`), `ErrorKind: 'provisioning'`
    (`errors.ts`), relâchement de `checkConfig` sur `pipelineId`.
-3. ~~Définir le modèle de settings multi-tenant~~ — fait, cf. section 2 ci-dessus. Reste à
-   implémenter : réglage `gatepulse.tenants`, `readGlobalConfig`/`readTenants`/
-   `buildConfigForTenant` (`extension.ts`), `checkTenants` (`config.ts`), commande
-   `gatepulse.switchTenant` + sélecteur dans le panel, suppression des réglages top-level
-   `tenantId`/`workspaceId`/`connectionGuid`/`databaseName`/`pipelineId`.
+3. ~~Définir le modèle de settings multi-tenant~~ — fait, cf. section 2 ci-dessus.
 4. ~~Concevoir la découverte dynamique des connexions/pipelines~~ — fait, cf. section 3 ci-dessus.
    Reste à implémenter : `listConnections` (`fabricClient.ts`), commandes `GatePulse: Pick
    Connection` / `Pick Pipeline (override)` / `Refresh Connections`, dégradation en saisie libre si
    le listing échoue.
-5. ~~Spécifier l'UX v1 du panel~~ — fait, cf. section 4 ci-dessus. Reste à implémenter : extraction
-   de `runSingle` hors de `scenarios.ts` (préalable), retrait des boutons/rendus P1-P4 du webview,
-   bandeau d'alerte + section Diagnostics repliée, sélecteur de tenant + picker de connexion,
-   bandeau de provisioning, historique de requêtes (`globalState`, cap 50), export CSV.
-6. `git init` local (sans remote) quand le travail de code démarre.
-7. Les quatre points (1-4) sont maintenant conçus. Prochaine décision : lancer l'implémentation
-   (probablement dans l'ordre 1 → 2 → 3 → 4, chaque point s'appuyant sur le précédent), ou
-   `git init` d'abord.
+5. ~~Spécifier l'UX v1 du panel~~ — fait, cf. section 4 ci-dessus. Reste à implémenter : retrait des
+   boutons/rendus P1-P4 du webview, bandeau d'alerte + section Diagnostics repliée, sélecteur de
+   tenant + picker de connexion dans le panel, bandeau de provisioning, historique de requêtes
+   (`globalState`, cap 50), export CSV.
+6. ~~`git init` local (sans remote)~~ — fait, `git log` : 3 commits (repo initial, point 1, point 2).
+7. **Implémenté (2026-09-24) : point 1** (`ensurePipeline`/`listItems`/`ErrorKind: 'provisioning'`/
+   `checkConfig` relâché) et **point 2** (`gatepulse.tenants`, `buildConfigForTenant`,
+   `checkTenants`, commandes `switchTenant`/`addTenant`) — typecheck/lint/compile/test verts à
+   chaque étape, committés séparément. `runSingle` a été extrait implicitement en restant appelé
+   depuis `scenarios.ts` (pas encore déplacé vers un module dédié — cf. correction plus haut ; à
+   faire au moment du point 4, pas bloquant avant). Restent à implémenter : point 3 (découverte
+   dynamique) et point 4 (UX du panel, y compris le retrait des boutons P1-P4 et l'extraction de
+   `runSingle`).
