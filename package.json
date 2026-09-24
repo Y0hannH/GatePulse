@@ -252,7 +252,7 @@
     "lint": "eslint .",
     "format": "prettier --write --no-error-on-unmatched-pattern \"src/**/*.{ts,tsx}\" \"test/**/*.ts\" \"*.js\"",
     "format:check": "prettier --check --no-error-on-unmatched-pattern \"src/**/*.{ts,tsx}\" \"test/**/*.ts\" \"*.js\"",
-    "test": "tsx test/mock-selftest.ts",
+    "test": "tsx test/mock-selftest.ts && tsx test/provision-selftest.ts",
     "vsix": "vsce package --no-dependencies",
     "cli": "node dist/cli.js",
     "validate": "node dist/cli.js all"
