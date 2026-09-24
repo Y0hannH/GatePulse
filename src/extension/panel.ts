@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 
 import { checkConfig, isGuid } from '../core/config';
 import { serializeError } from '../core/errors';
+import { ensurePipeline } from '../core/provision';
 import type { ScenarioContext, ScenarioName, ScenarioReport } from '../core/scenarios';
 import {
   runConcurrencyTest,
@@ -137,6 +138,21 @@ export class SqlPanel {
       onProgress: (e) => void this.post({ type: 'progress', event: e }),
     };
     try {
+      // Empty pipelineId = not yet resolved for this session; resolved once and cached on cfg
+      // (FabricClient reads cfg.pipelineId live, so mutating it here is enough — see V1-SCOPE.md §1).
+      if (!session.cfg.pipelineId) {
+        const resolved = await ensurePipeline(
+          session.client,
+          session.logger,
+          session.cfg.parameterNames,
+        );
+        session.cfg.pipelineId = resolved.id;
+        if (resolved.created) {
+          void vscode.window.showInformationMessage(
+            `GatePulse : pipeline "${resolved.displayName}" provisionné automatiquement dans ce workspace.`,
+          );
+        }
+      }
       const report: ScenarioReport =
         m.type === 'run'
           ? await runSingle(ctx, { ...conn, query: m.query })

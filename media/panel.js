@@ -31,6 +31,7 @@
     connection: ['Erreur de connexion / gateway', 'GUID de connexion, gateway, identifiants ou base inaccessibles.'],
     pipelineFailed: ['Échec du pipeline', 'Erreur non classée : voir le message brut.'],
     resultRetrieval: ['Résultat non récupérable via API', 'Le job a tourné mais la sortie du Lookup n’a pas pu être lue (point P1).'],
+    provisioning: ['Pipeline générique non utilisable', 'Un pipeline du bon nom existe dans ce workspace mais n’est pas valide (paramètres manquants, ou pas d’activité Lookup/Script) : le corriger ou le renommer à la main.'],
     network: ['Erreur réseau', ''],
     unexpected: ['Erreur inattendue', ''],
   };

@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 
+import bundledPipelineTemplate from '../../provisioning/pipeline-template.json';
 import type { ParameterNames } from './config';
 import { GatePulseError } from './errors';
 import type { FabricClient } from './fabricClient';
@@ -124,24 +125,37 @@ export async function inspectPipeline(
 
 /**
  * Creates the generic 3-parameter Lookup pipeline through the API.
- * - fromPipelineId: clones the definition of a pipeline built in the UI (known-good JSON).
- * - templatePath:   uses provisioning/pipeline-template.json (hand-written; validate with `inspect`).
+ * - fromPipelineId:   clones the definition of a pipeline built in the UI (known-good JSON).
+ * - templatePath:     uses a JSON file on disk (CLI only; hand-written, validate with `inspect`).
+ * - templateContent:  an already-loaded definition (extension: the bundled template, imported so
+ *   esbuild inlines it — no filesystem path to resolve at runtime inside a packaged extension).
  */
 export async function provisionPipeline(
   client: FabricClient,
   log: Logger,
   names: ParameterNames,
-  opts: { displayName: string; fromPipelineId?: string; templatePath?: string },
+  opts: {
+    displayName: string;
+    fromPipelineId?: string;
+    templatePath?: string;
+    templateContent?: PipelineContent;
+  },
 ): Promise<{ id: string; displayName: string }> {
   let content: PipelineContent;
   if (opts.fromPipelineId) {
     content = (await inspectPipeline(client, opts.fromPipelineId, names, log)).content;
     log.info('provision.source', `Cloning definition of pipeline ${opts.fromPipelineId}`);
+  } else if (opts.templateContent) {
+    content = opts.templateContent;
+    log.info('provision.source', 'Using the bundled generic pipeline template');
   } else if (opts.templatePath) {
     content = JSON.parse(fs.readFileSync(opts.templatePath, 'utf8')) as PipelineContent;
     log.info('provision.source', `Using template ${opts.templatePath}`);
   } else {
-    throw new GatePulseError('config', 'provision needs --from <pipelineId> or --template <file>');
+    throw new GatePulseError(
+      'config',
+      'provision needs --from <pipelineId>, --template <file>, or a bundled template',
+    );
   }
   const missing = Object.values(names).filter((p) => !(content.properties.parameters ?? {})[p]);
   if (missing.length)
@@ -165,4 +179,72 @@ export async function provisionPipeline(
   // Round-trip check: the stored definition must still bind the connection dynamically.
   await inspectPipeline(client, created.id, names, log);
   return created;
+}
+
+/**
+ * Fixed, versionless name: what lets GatePulse recognise "the" generic pipeline in a workspace
+ * regardless of who provisioned it. See V1-SCOPE.md §1 for the reasoning and the open risks
+ * (displayName uniqueness in a workspace is not guaranteed by Fabric — unconfirmed).
+ */
+export const GATEPULSE_PIPELINE_NAME = 'GatePulse — Generic SQL Lookup Pipeline';
+
+/**
+ * Resolves the generic pipeline for the client's configured workspace: reuses it if it already
+ * exists (matched by name, not id — a colleague may have provisioned it from a different VS Code
+ * install), provisions it otherwise. Never deletes anything: a malformed or duplicated candidate
+ * is surfaced as an error/warning for manual cleanup, not silently worked around.
+ */
+export async function ensurePipeline(
+  client: FabricClient,
+  log: Logger,
+  names: ParameterNames,
+): Promise<{ id: string; displayName: string; created: boolean }> {
+  const matching = (items: { id: string; displayName: string; type: string }[]) =>
+    items.filter((i) => i.type === 'DataPipeline' && i.displayName === GATEPULSE_PIPELINE_NAME);
+
+  let candidates = matching(await client.listItems('DataPipeline'));
+
+  if (candidates.length === 1) {
+    const [candidate] = candidates;
+    const { summary } = await inspectPipeline(client, candidate.id, names, log);
+    if (summary.missingParameters.length || summary.queryActivities.length === 0) {
+      throw new GatePulseError(
+        'provisioning',
+        `Pipeline "${GATEPULSE_PIPELINE_NAME}" (${candidate.id}) already exists in this workspace ` +
+          `but is not usable (missing parameters: ${summary.missingParameters.join(', ') || 'none'}; ` +
+          `query activities: ${summary.queryActivities.length}). Fix it by hand or rename it — ` +
+          'GatePulse will not create a second pipeline with the same name.',
+      );
+    }
+    return { id: candidate.id, displayName: candidate.displayName, created: false };
+  }
+
+  if (candidates.length === 0) {
+    // Narrows the race window between two colleagues provisioning at the same time; does not
+    // eliminate it (Fabric's displayName uniqueness within a workspace is unconfirmed — V1-SCOPE.md).
+    candidates = matching(await client.listItems('DataPipeline'));
+  }
+
+  if (candidates.length === 0) {
+    log.info(
+      'provision.autoTriggered',
+      `No "${GATEPULSE_PIPELINE_NAME}" pipeline found in this workspace — provisioning it automatically`,
+    );
+    const created = await provisionPipeline(client, log, names, {
+      displayName: GATEPULSE_PIPELINE_NAME,
+      templateContent: bundledPipelineTemplate as unknown as PipelineContent,
+    });
+    return { ...created, created: true };
+  }
+
+  // Two colleagues lost the race above despite the re-list: don't delete anything automatically,
+  // pick a deterministic winner (same choice on every machine) and flag the rest for manual cleanup.
+  const winner = [...candidates].sort((a, b) => (a.id < b.id ? -1 : 1))[0];
+  log.warn(
+    'provision.duplicates',
+    `${candidates.length} pipelines named "${GATEPULSE_PIPELINE_NAME}" found in this workspace — ` +
+      `using ${winner.id} (smallest id, deterministic); the others need manual cleanup: ` +
+      candidates.map((c) => c.id).join(', '),
+  );
+  return { id: winner.id, displayName: winner.displayName, created: false };
 }

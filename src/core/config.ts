@@ -38,6 +38,7 @@ export interface GatePulseConfig {
   /** Optional. Empty = Microsoft first-party public client (no app registration needed). */
   clientId: string;
   workspaceId: string;
+  /** Empty = resolved automatically on first use (ensurePipeline, provision.ts). Set = manual override, skips discovery. */
   pipelineId: string;
   connectionGuid: string;
   databaseName: string;
@@ -129,10 +130,13 @@ export function checkConfig(cfg: GatePulseConfig): string[] {
   const problems: string[] = [];
   if (cfg.clientId && !isGuid(cfg.clientId))
     problems.push(`"clientId" is not a GUID: ${cfg.clientId}`);
-  for (const key of ['tenantId', 'workspaceId', 'pipelineId'] as const) {
+  for (const key of ['tenantId', 'workspaceId'] as const) {
     if (!cfg[key]) problems.push(`"${key}" is not set`);
     else if (!isGuid(cfg[key])) problems.push(`"${key}" is not a GUID: ${cfg[key]}`);
   }
+  // pipelineId is optional: empty means "resolve automatically" (ensurePipeline), not a config error.
+  if (cfg.pipelineId && !isGuid(cfg.pipelineId))
+    problems.push(`"pipelineId" is not a GUID: ${cfg.pipelineId}`);
   for (const [key, name] of Object.entries(cfg.parameterNames))
     if (!name) problems.push(`"parameterNames.${key}" is empty`);
   if (cfg.scopes.length === 0) problems.push('"scopes" is empty');

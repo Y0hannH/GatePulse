@@ -52,7 +52,7 @@
         "gatepulse.pipelineId": {
           "type": "string",
           "default": "",
-          "description": "Fabric Data Pipeline item ID (the generic 3-parameter Lookup pipeline)."
+          "description": "Optional. Empty = resolved automatically on first use (an existing generic pipeline is reused if one is found in the workspace, otherwise one is provisioned). Set only to override with a specific pipeline item ID."
         },
         "gatepulse.connectionGuid": {
           "type": "string",

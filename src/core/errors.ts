@@ -16,6 +16,7 @@ export type ErrorKind =
   | 'connection' // gateway / connection GUID / credentials problem
   | 'pipelineFailed' // pipeline failed for another reason
   | 'resultRetrieval' // job finished but the Lookup output could not be read via API
+  | 'provisioning' // ensurePipeline: candidate pipeline malformed, or duplicates found (see provision.ts)
   | 'network'
   | 'unexpected';
 

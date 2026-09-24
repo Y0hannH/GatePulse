@@ -185,6 +185,31 @@ export class FabricClient {
 
   // ---------------------------------------------------------------- items (provisioning / inspection)
 
+  /**
+   * GET /v1/workspaces/{workspaceId}/items[?type=X], follows continuationUri.
+   * Used to find an already-provisioned pipeline by name before creating a new one
+   * (ensurePipeline, provision.ts) — see V1-SCOPE.md §1.
+   */
+  async listItems(type?: string): Promise<{ id: string; displayName: string; type: string }[]> {
+    const MAX_PAGES = 50;
+    const items: { id: string; displayName: string; type: string }[] = [];
+    let apiPath: string | undefined =
+      `/v1/workspaces/${this.cfg.workspaceId}/items${type ? `?type=${type}` : ''}`;
+    let page = 0;
+    while (apiPath && page < MAX_PAGES) {
+      const res: HttpResult<{
+        value?: { id: string; displayName: string; type: string }[];
+        continuationUri?: string;
+      }> = await this.request('GET', apiPath, { label: 'item.list', expected: [200] });
+      items.push(...(res.body.value ?? []));
+      const next: string | undefined = res.body.continuationUri;
+      apiPath =
+        next && next.startsWith(this.cfg.apiBaseUrl) ? next.slice(this.cfg.apiBaseUrl.length) : undefined;
+      page++;
+    }
+    return items;
+  }
+
   async getItem(itemId: string) {
     return (
       await this.request<{ id: string; displayName: string; type: string }>(
