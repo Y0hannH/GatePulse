@@ -33,6 +33,25 @@ export interface ValidationConfig {
   sizeQueryTemplate: string;
 }
 
+/**
+ * One entry of the `gatepulse.tenants` setting — one Fabric workspace per tenant, supplied by the
+ * user (GatePulse never creates a workspace). Lives in User Settings by default, not tied to a
+ * project/repo: GatePulse is used standalone, like the mssql extension (see V1-SCOPE.md §2).
+ */
+export interface TenantEntry {
+  alias: string;
+  tenantId: string;
+  workspaceId: string;
+  /** Optional: app registration override for this tenant (falls back to the global clientId). */
+  clientId?: string;
+  /** Optional: manual override, skips ensurePipeline's auto-discovery for this tenant. */
+  pipelineId?: string;
+  /** Optional pre-fill for the panel. */
+  connectionGuid?: string;
+  /** Optional pre-fill for the panel. */
+  databaseName?: string;
+}
+
 export interface GatePulseConfig {
   tenantId: string;
   /** Optional. Empty = Microsoft first-party public client (no app registration needed). */
@@ -119,6 +138,41 @@ export function mergeConfig(
   };
 }
 
+/**
+ * Merges the global settings (everything but tenant identity/targeting) with one tenant entry
+ * into the flat shape FabricClient/PipelineRunner/session.ts already expect. Multi-tenant is
+ * handled entirely above this function (extension.ts) — src/core only ever sees one tenant at a
+ * time (V1-SCOPE.md §2).
+ */
+export function buildConfigForTenant(
+  global: Partial<
+    Omit<
+      GatePulseConfig,
+      | 'tenantId'
+      | 'workspaceId'
+      | 'pipelineId'
+      | 'connectionGuid'
+      | 'databaseName'
+      | 'validation'
+      | 'parameterNames'
+    >
+  > & {
+    validation?: Partial<ValidationConfig>;
+    parameterNames?: Partial<ParameterNames>;
+  },
+  tenant: TenantEntry,
+): GatePulseConfig {
+  return mergeConfig({
+    ...global,
+    tenantId: tenant.tenantId,
+    clientId: tenant.clientId || global.clientId,
+    workspaceId: tenant.workspaceId,
+    pipelineId: tenant.pipelineId ?? '',
+    connectionGuid: tenant.connectionGuid ?? '',
+    databaseName: tenant.databaseName ?? '',
+  });
+}
+
 const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function isGuid(value: string): boolean {
@@ -141,5 +195,31 @@ export function checkConfig(cfg: GatePulseConfig): string[] {
     if (!name) problems.push(`"parameterNames.${key}" is empty`);
   if (cfg.scopes.length === 0) problems.push('"scopes" is empty');
   if (cfg.pollIntervalMs < 250) problems.push('"pollIntervalMs" must be >= 250');
+  return problems;
+}
+
+/** Returns human-readable problems on the `gatepulse.tenants` setting itself, before any tenant is picked. */
+export function checkTenants(tenants: TenantEntry[]): string[] {
+  const problems: string[] = [];
+  if (tenants.length === 0) {
+    problems.push('No tenant configured — add one to "gatepulse.tenants"');
+    return problems;
+  }
+  const seenAlias = new Set<string>();
+  for (const t of tenants) {
+    const label = t.alias || '(no alias)';
+    if (!t.alias) problems.push('A "gatepulse.tenants" entry has no "alias"');
+    else if (seenAlias.has(t.alias.toLowerCase()))
+      problems.push(`Duplicate tenant alias: "${t.alias}"`);
+    else seenAlias.add(t.alias.toLowerCase());
+    for (const key of ['tenantId', 'workspaceId'] as const) {
+      if (!t[key]) problems.push(`Tenant "${label}": "${key}" is not set`);
+      else if (!isGuid(t[key])) problems.push(`Tenant "${label}": "${key}" is not a GUID: ${t[key]}`);
+    }
+    for (const key of ['clientId', 'pipelineId', 'connectionGuid'] as const) {
+      const v = t[key];
+      if (v && !isGuid(v)) problems.push(`Tenant "${label}": "${key}" is not a GUID: ${v}`);
+    }
+  }
   return problems;
 }

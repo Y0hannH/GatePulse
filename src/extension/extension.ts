@@ -2,13 +2,8 @@ import type { AuthUi } from '@evolve-data/pulse-core';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
-import type {
-  AuthFlow,
-  GatePulseConfig,
-  ParameterNames,
-  ParameterPayloadFormat,
-} from '../core/config';
-import { mergeConfig } from '../core/config';
+import type { AuthFlow, ParameterNames, ParameterPayloadFormat, TenantEntry } from '../core/config';
+import { buildConfigForTenant, isGuid } from '../core/config';
 import type { LogEntry, LogSink } from '../core/logger';
 import { formatEntry } from '../core/logger';
 import type { Session } from '../core/session';
@@ -24,16 +19,12 @@ class OutputChannelSink implements LogSink {
   }
 }
 
-export function readConfig(): GatePulseConfig {
+/** Everything settings-based except tenant identity/targeting — merged with one TenantEntry by buildConfigForTenant. */
+function readGlobalConfig() {
   const c = vscode.workspace.getConfiguration('gatepulse');
   const v = (key: string) => c.get(`validation.${key}`);
-  return mergeConfig({
-    tenantId: c.get<string>('tenantId')?.trim(),
+  return {
     clientId: c.get<string>('clientId')?.trim(),
-    workspaceId: c.get<string>('workspaceId')?.trim(),
-    pipelineId: c.get<string>('pipelineId')?.trim(),
-    connectionGuid: c.get<string>('connectionGuid')?.trim(),
-    databaseName: c.get<string>('databaseName')?.trim(),
     authFlow: c.get<AuthFlow>('authFlow'),
     scopes: c.get<string[]>('scopes'),
     pollIntervalMs: c.get<number>('pollIntervalMs'),
@@ -55,7 +46,27 @@ export function readConfig(): GatePulseConfig {
       sizeTestRows: v('sizeTestRows') as number[],
       sizeQueryTemplate: v('sizeQueryTemplate') as string,
     },
-  });
+  };
+}
+
+/**
+ * `gatepulse.tenants`: no `scope: "resource"` — lives in User Settings by default, not tied to a
+ * project/repo. GatePulse is used standalone, like the mssql extension (V1-SCOPE.md §2).
+ */
+export function readTenants(): TenantEntry[] {
+  const raw = vscode.workspace.getConfiguration('gatepulse').get<TenantEntry[]>('tenants', []);
+  return raw.filter(
+    (t) => t && typeof t.alias === 'string' && typeof t.tenantId === 'string' && typeof t.workspaceId === 'string',
+  );
+}
+
+const ACTIVE_TENANT_KEY = 'gatepulse.activeTenantAlias';
+const EMPTY_TENANT: TenantEntry = { alias: '', tenantId: '', workspaceId: '' };
+
+/** globalState, not workspaceState — the active tenant must survive with no folder open (V1-SCOPE.md §2). */
+function getActiveTenant(context: vscode.ExtensionContext, tenants: TenantEntry[]): TenantEntry {
+  const activeAlias = context.globalState.get<string>(ACTIVE_TENANT_KEY);
+  return tenants.find((t) => t.alias === activeAlias) ?? tenants[0] ?? EMPTY_TENANT;
 }
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -82,7 +93,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const getSession = (): Session => {
     if (!session) {
-      const cfg = readConfig();
+      const tenant = getActiveTenant(context, readTenants());
+      const cfg = buildConfigForTenant(readGlobalConfig(), tenant);
       const configuredLogDir = vscode.workspace
         .getConfiguration('gatepulse')
         .get<string>('logDirectory')
@@ -95,6 +107,7 @@ export function activate(context: vscode.ExtensionContext): void {
         sinks: [new OutputChannelSink(channel)],
       });
       session.logger.info('extension.session', `Session ready — JSONL log: ${session.logFile}`, {
+        tenantAlias: tenant.alias,
         workspaceId: cfg.workspaceId,
         pipelineId: cfg.pipelineId,
         parameterPayloadFormat: cfg.parameterPayloadFormat,
@@ -103,14 +116,19 @@ export function activate(context: vscode.ExtensionContext): void {
     return session;
   };
 
+  /** Invalidates the cached session (tenant or settings changed) and refreshes the panel if open. */
+  const invalidateSession = (): void => {
+    session = undefined; // rebuilt lazily; tokens are in memory, so sign-in happens again
+    SqlPanel.current?.refreshDefaults();
+  };
+
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (!e.affectsConfiguration('gatepulse')) return;
-      session = undefined; // rebuilt lazily with the new settings; tokens are in memory, so sign-in happens again
-      SqlPanel.current?.refreshDefaults();
+      invalidateSession();
     }),
     vscode.commands.registerCommand('gatepulse.openPanel', () =>
-      SqlPanel.show(context, getSession, channel),
+      SqlPanel.show(context, getSession, readTenants, channel),
     ),
     vscode.commands.registerCommand('gatepulse.showLogs', () => channel.show()),
     vscode.commands.registerCommand('gatepulse.signOut', async () => {
@@ -118,6 +136,56 @@ export function activate(context: vscode.ExtensionContext): void {
       void vscode.window.showInformationMessage(
         'GatePulse : session effacée, la prochaine exécution redemandera la connexion.',
       );
+    }),
+    vscode.commands.registerCommand('gatepulse.switchTenant', async () => {
+      const tenants = readTenants();
+      if (tenants.length === 0) {
+        void vscode.window.showWarningMessage(
+          'GatePulse : aucun tenant configuré ("gatepulse.tenants" est vide).',
+        );
+        return;
+      }
+      const picked = await vscode.window.showQuickPick(
+        tenants.map((t) => ({ label: t.alias, description: t.tenantId, tenant: t })),
+        { placeHolder: 'GatePulse : choisir le tenant actif' },
+      );
+      if (!picked) return;
+      await context.globalState.update(ACTIVE_TENANT_KEY, picked.tenant.alias);
+      invalidateSession();
+    }),
+    vscode.commands.registerCommand('gatepulse.addTenant', async () => {
+      const alias = (await vscode.window.showInputBox({
+        prompt: 'GatePulse : nom du tenant (alias)',
+        placeHolder: 'Client A - Prod',
+      }))?.trim();
+      if (!alias) return;
+      const existing = readTenants();
+      if (existing.some((t) => t.alias.toLowerCase() === alias.toLowerCase())) {
+        void vscode.window.showErrorMessage(`GatePulse : l'alias "${alias}" existe déjà.`);
+        return;
+      }
+      const tenantId = (await vscode.window.showInputBox({
+        prompt: 'GatePulse : tenant ID (GUID Entra ID)',
+      }))?.trim();
+      if (!tenantId) return;
+      if (!isGuid(tenantId)) {
+        void vscode.window.showErrorMessage('GatePulse : tenantId invalide (GUID attendu).');
+        return;
+      }
+      const workspaceId = (await vscode.window.showInputBox({
+        prompt: 'GatePulse : workspace ID (GUID Fabric)',
+      }))?.trim();
+      if (!workspaceId) return;
+      if (!isGuid(workspaceId)) {
+        void vscode.window.showErrorMessage('GatePulse : workspaceId invalide (GUID attendu).');
+        return;
+      }
+      // Global, jamais Workspace : GatePulse s'utilise sans dossier ouvert (V1-SCOPE.md §2).
+      await vscode.workspace
+        .getConfiguration('gatepulse')
+        .update('tenants', [...existing, { alias, tenantId, workspaceId }], vscode.ConfigurationTarget.Global);
+      await context.globalState.update(ACTIVE_TENANT_KEY, alias);
+      invalidateSession();
     }),
   );
 }

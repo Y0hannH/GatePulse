@@ -29,40 +29,66 @@
       {
         "command": "gatepulse.showLogs",
         "title": "GatePulse: Show Logs"
+      },
+      {
+        "command": "gatepulse.switchTenant",
+        "title": "GatePulse: Switch Tenant"
+      },
+      {
+        "command": "gatepulse.addTenant",
+        "title": "GatePulse: Add Tenant"
       }
     ],
     "configuration": {
       "title": "GatePulse",
       "properties": {
-        "gatepulse.tenantId": {
-          "type": "string",
-          "default": "",
-          "description": "Entra ID tenant ID (GUID) where the Fabric workspace lives."
+        "gatepulse.tenants": {
+          "type": "array",
+          "default": [],
+          "description": "Tenants/workspaces available in the panel and in \"GatePulse: Switch Tenant\". No project/repo needed — GatePulse is used standalone, like the mssql extension: this lives in User Settings by default, not tied to a workspace.",
+          "items": {
+            "type": "object",
+            "required": [
+              "alias",
+              "tenantId",
+              "workspaceId"
+            ],
+            "properties": {
+              "alias": {
+                "type": "string",
+                "description": "Display name, e.g. \"Client A - Prod\"."
+              },
+              "tenantId": {
+                "type": "string",
+                "description": "Entra ID tenant GUID."
+              },
+              "workspaceId": {
+                "type": "string",
+                "description": "Fabric workspace GUID — where the generic pipeline lives, or will be auto-provisioned."
+              },
+              "clientId": {
+                "type": "string",
+                "description": "Optional: app registration override for this tenant (otherwise gatepulse.clientId)."
+              },
+              "pipelineId": {
+                "type": "string",
+                "description": "Optional: manual override, skips auto-provisioning for this tenant."
+              },
+              "connectionGuid": {
+                "type": "string",
+                "description": "Optional: gateway connection GUID pre-filled in the panel."
+              },
+              "databaseName": {
+                "type": "string",
+                "description": "Optional: database name pre-filled in the panel."
+              }
+            }
+          }
         },
         "gatepulse.clientId": {
           "type": "string",
           "default": "",
-          "description": "Optional. Leave empty to sign in with Microsoft's first-party public client (same as Azure CLI / FabricPulse). Set only if you have your own app registration allowed for user sign-in."
-        },
-        "gatepulse.workspaceId": {
-          "type": "string",
-          "default": "",
-          "description": "Fabric workspace ID."
-        },
-        "gatepulse.pipelineId": {
-          "type": "string",
-          "default": "",
-          "description": "Optional. Empty = resolved automatically on first use (an existing generic pipeline is reused if one is found in the workspace, otherwise one is provisioned). Set only to override with a specific pipeline item ID."
-        },
-        "gatepulse.connectionGuid": {
-          "type": "string",
-          "default": "",
-          "description": "Default gateway connection GUID pre-filled in the panel."
-        },
-        "gatepulse.databaseName": {
-          "type": "string",
-          "default": "",
-          "description": "Default database name pre-filled in the panel."
+          "description": "Optional. Leave empty to sign in with Microsoft's first-party public client (same as Azure CLI / FabricPulse). Set only if you have your own app registration allowed for user sign-in. Overridden per tenant by gatepulse.tenants[].clientId."
         },
         "gatepulse.authFlow": {
           "type": "string",

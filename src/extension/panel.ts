@@ -1,7 +1,8 @@
 import { randomBytes } from 'crypto';
 import * as vscode from 'vscode';
 
-import { checkConfig, isGuid } from '../core/config';
+import type { TenantEntry } from '../core/config';
+import { checkConfig, checkTenants, isGuid } from '../core/config';
 import { serializeError } from '../core/errors';
 import { ensurePipeline } from '../core/provision';
 import type { ScenarioContext, ScenarioName, ScenarioReport } from '../core/scenarios';
@@ -44,6 +45,7 @@ export class SqlPanel {
   static show(
     context: vscode.ExtensionContext,
     getSession: () => Session,
+    getTenants: () => TenantEntry[],
     channel: vscode.OutputChannel,
   ): void {
     if (SqlPanel.current) {
@@ -60,13 +62,14 @@ export class SqlPanel {
         localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')],
       },
     );
-    SqlPanel.current = new SqlPanel(panel, context, getSession, channel);
+    SqlPanel.current = new SqlPanel(panel, context, getSession, getTenants, channel);
   }
 
   private constructor(
     private readonly panel: vscode.WebviewPanel,
     private readonly context: vscode.ExtensionContext,
     private readonly getSession: () => Session,
+    private readonly getTenants: () => TenantEntry[],
     private readonly channel: vscode.OutputChannel,
   ) {
     panel.webview.html = this.html();
@@ -82,7 +85,7 @@ export class SqlPanel {
     void this.post({
       type: 'init',
       defaults: { connectionGuid: cfg.connectionGuid, databaseName: cfg.databaseName },
-      configProblems: checkConfig(cfg),
+      configProblems: [...checkTenants(this.getTenants()), ...checkConfig(cfg)],
     });
   }
 
@@ -115,7 +118,7 @@ export class SqlPanel {
       return;
     }
     const session = this.getSession();
-    const problems = checkConfig(session.cfg);
+    const problems = [...checkTenants(this.getTenants()), ...checkConfig(session.cfg)];
     const conn = { connectionGuid: m.connectionGuid.trim(), databaseName: m.databaseName.trim() };
     if (!isGuid(conn.connectionGuid))
       problems.push(`connectionGuid is not a GUID: "${conn.connectionGuid}"`);
