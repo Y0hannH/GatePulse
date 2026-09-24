@@ -1,0 +1,51 @@
+{
+  "name": "GatePulseSqlLookup",
+  "properties": {
+    "activities": [
+      {
+        "name": "LookupQuery",
+        "type": "Lookup",
+        "dependsOn": [],
+        "policy": {
+          "timeout": "0.00:10:00",
+          "retry": 0,
+          "retryIntervalInSeconds": 30,
+          "secureOutput": false,
+          "secureInput": false
+        },
+        "typeProperties": {
+          "source": {
+            "type": "AzureSqlSource",
+            "sqlReaderQuery": {
+              "value": "@pipeline().parameters.query",
+              "type": "Expression"
+            },
+            "queryTimeout": "02:00:00",
+            "partitionOption": "None"
+          },
+          "firstRowOnly": false,
+          "datasetSettings": {
+            "annotations": [],
+            "type": "AzureSqlTable",
+            "schema": [],
+            "typeProperties": {
+              "database": {
+                "value": "@pipeline().parameters.databaseName",
+                "type": "Expression"
+              }
+            },
+            "externalReferences": {
+              "connection": "@pipeline().parameters.connectionGuid"
+            }
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "connectionGuid": { "type": "string" },
+      "databaseName": { "type": "string" },
+      "query": { "type": "string" }
+    },
+    "annotations": []
+  }
+}

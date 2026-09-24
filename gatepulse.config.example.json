@@ -1,0 +1,31 @@
+{
+  "tenantId": "00000000-0000-0000-0000-000000000000",
+  "clientId": "",
+  "workspaceId": "00000000-0000-0000-0000-000000000000",
+  "pipelineId": "00000000-0000-0000-0000-000000000000",
+  "connectionGuid": "00000000-0000-0000-0000-000000000000",
+  "databaseName": "MyDatabase",
+  "authFlow": "auto",
+  "pollIntervalMs": 2000,
+  "timeoutMs": 120000,
+  "activityNames": [],
+  "parameterPayloadFormat": "executionData",
+  "parameterNames": {
+    "connectionGuid": "connectionGuid",
+    "databaseName": "databaseName",
+    "query": "query"
+  },
+  "validation": {
+    "concurrency": 3,
+    "alternateConnectionGuid": "",
+    "alternateDatabaseName": "",
+    "referenceUiJobInstanceId": "",
+    "latencyIterations": 3,
+    "rowCapSizes": [
+      100,
+      5000,
+      5001,
+      7500
+    ]
+  }
+}

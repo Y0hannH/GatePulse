@@ -1,0 +1,36 @@
+# Sources (bundled by esbuild into dist/)
+src/**
+test/**
+
+# Stale output from the pre-phase-1 layout — never ship it
+out/**
+
+# Config & dev files
+.vscode/**
+.claude/**
+.git/**
+.gitignore
+tsconfig.json
+esbuild.js
+eslint.config.js
+.prettierrc.json
+.prettierignore
+CLAUDE.md
+README.md
+
+# Démo : config locale, journaux et scripts de provisioning
+logs/**
+.gatepulse/**
+docs/**
+provisioning/**
+gatepulse.config*.json
+
+# Dependencies (bundled by esbuild)
+node_modules/**
+
+# Maps (not needed in production)
+**/*.map
+
+# Misc
+**/.DS_Store
+*.vsix

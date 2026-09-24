@@ -1,0 +1,423 @@
+# GatePulse — Cadrage V1
+
+Décidé le 2026-09-24 : le PoC est validé, on sort du statut démo. Ce document fixe le périmètre
+de la V1 tel que tranché avec Yohann ; il sert de référence tant qu'il n'est pas remplacé par des
+issues/tickets de suivi.
+
+## Contexte
+
+Le PoC (v0.1.0) a démontré la faisabilité technique : exécuter du SQL ad hoc sur une base on-prem /
+IP-filtrée via un pipeline Fabric générique (Lookup/Script + connexion gateway), piloté uniquement
+par l'API REST Fabric. Les 4 points de risque du brief sont mesurés et pour l'essentiel confirmés
+(voir `README.md` §6 et §5) : plafond Lookup à 5000 lignes (troncature silencieuse), limite de
+sortie à 4 194 304 octets, format des paramètres, point d'API de résultat.
+
+GatePulse avait été choisi comme pilote de `pulse-shared` (auth) précisément parce que
+« démo, enjeu nul » (`HARMONISATION.md` L372). Ce n'est plus vrai à partir de maintenant : le code
+partagé qu'il consomme devient un chemin critique pour un outil d'usage quotidien, pas un terrain
+d'essai sans conséquence. En tenir compte pour les prochaines évolutions de `pulse-shared`.
+
+## Objectif V1
+
+**Outil interne pour data engineers** : exécuter du SQL ad hoc sur les bases on-prem / IP-filtrées
+directement depuis VS Code, sans repasser par le contournement actuel (accès manuel via l'UI Fabric,
+SSMS via VPN, ou équivalent — à documenter précisément côté utilisateurs). L'extension VS Code est
+la seule surface produit retenue pour la V1.
+
+## Statut du repo et distribution
+
+- Repo git à initialiser en local, aligné structurellement sur FabricPulse / VaultPulse / dbtforge
+  (tsconfig, eslint flat config, scripts npm communs — déjà fait depuis la bascule `dist/` +
+  `pulse-core`). **Pas de remote GitHub pour l'instant**, pas de Marketplace : distribution interne
+  via `.vsix` comme aujourd'hui.
+- `publisher: "gatepulse"`, `private: true`, `UNLICENSED` restent en l'état tant que le repo reste
+  local. Réaligner sur `evolve-data` seulement si/quand une distribution externe est décidée.
+- Le nom de package `gatepulse-fabric-sql-demo` doit perdre le suffixe `-demo` (V1, plus une démo) —
+  à faire au moment du chantier de renommage, pas isolément.
+
+## Sort du périmètre produit V1
+
+Le CLI de validation (`src/cli/main.ts`, scénarios P1 à P4 : rowcap, size, latency, concurrency,
+swap) sort du produit livré — il a rempli son rôle de preuve de faisabilité pour le PoC.
+
+- **Décidé le 2026-09-24 : archivé, gelé.** On n'y touche plus — ni corrections, ni suivi des
+  évolutions de `src/core` côté V1 (le CLI peut donc se retrouver désynchronisé au fil du temps,
+  assumé). Le code reste en place tel quel dans `src/cli/` ; pas de suppression, pas de déplacement
+  tant que le repo n'a pas de git (rien à tagger). Une fois `git init` fait, marquer l'état courant
+  d'un tag avant de considérer un déplacement vers un dossier `archive/`.
+- **Correction du 2026-09-24 (en concevant le point 4, UX du panel) : le gel ne couvre PAS tout
+  `scenarios.ts`.** `runSingle` — l'exécution d'une requête simple, utilisée par le panel VS Code,
+  donc par le produit V1 — vit dans ce même fichier, à côté des scénarios P1-P4
+  (`runLatencyTest`/`runRowCapTest`/`runSizeTest`/`runConcurrencyTest`/`runSwapTest`, ceux-là bien
+  gelés). Idem pour le wrapper générique `scenario()` et les types `ScenarioReport`/
+  `ScenarioContext` que `runSingle` utilise. **À l'implémentation** : extraire `runSingle` +
+  `scenario()` + ces types vers un nouveau module non gelé (ex. `src/core/runQuery.ts`) avant de
+  commencer le point 4, pour que le panel ne dépende plus du fichier archivé. Seules les fonctions
+  `run<X>Test` (et leurs helpers `perSizeRuns`, `maxConcurrent`, `describe`, `formatVerdicts`,
+  `aggregateVerdicts` si non réutilisés ailleurs) restent gelées dans `scenarios.ts`. Le
+  `CLAUDE.md` du repo, qui disait « `src/cli/main.ts` et les scénarios P1-P4
+  (`src/core/scenarios.ts`, `compare.ts`) sont gelés », est corrigé en conséquence.
+- `test/mock-selftest.ts` (`npm test`) couvre aujourd'hui surtout les scénarios de validation : à
+  revoir une fois le travail V1 démarré, pour re-cibler ce qui reste utile côté `src/core`
+  (`pipelineRunner`, `fabricClient`, `provision`, et le nouveau module `runQuery`) — sans dépendre
+  du CLI figé.
+- Le CLI garde son utilité de fait comme historique de mesure (résultats déjà obtenus, cf.
+  `README.md` §6) même s'il sort du produit livré.
+
+## Nouvelles exigences V1
+
+### 1. Provisioning automatique du pipeline — conception (2026-09-24)
+
+**Principe** : l'utilisateur fournit le **workspace** Fabric pour chaque tenant (pas de création
+de workspace par l'extension — hors périmètre, cf. plus bas), renseigné en settings. Au premier
+usage sur un tenant/workspace donné, l'extension détecte si le pipeline générique existe déjà dans
+ce workspace et le crée automatiquement sinon. **Contrainte clé** : un pipeline par
+**workspace/tenant**, pas par (tenant × utilisateur de l'extension) — un workspace déjà configuré
+par un collègue doit être réutilisé tel quel.
+
+**Identification déterministe.** Un nom d'affichage fixe et versionné identifie le pipeline
+générique dans un workspace, indépendamment de qui l'a créé : constante
+`GATEPULSE_PIPELINE_NAME = "GatePulse — Generic SQL Lookup Pipeline"` (à définir dans
+`provision.ts`, à côté de `QUERY_ACTIVITY_TYPES`). Pas de suffixe de version dans le nom pour l'v1
+— la question de faire évoluer un pipeline déjà provisionné par une v1 antérieure est un problème
+distinct, non résolu ici (cf. risques plus bas).
+
+**Nouvelle capacité côté `fabricClient.ts`.** Aucun listing d'items de workspace n'existe
+aujourd'hui (seul `getItem(itemId)` unitaire). À ajouter, sur le même modèle que
+`FabricPulse/src/services/fabricApi.ts` (`getDbtJobs`, `GET /workspaces/{wsId}/items?type=X` +
+pagination par `continuationUri`) — cohérent avec le futur client REST partagé de
+`HARMONISATION.md` (« Client REST Fabric partagé (FabricPulse + GatePulse) ») :
+
+```
+async listItems(type?: string): Promise<{ id: string; displayName: string; type: string }[]>
+// GET /v1/workspaces/{workspaceId}/items[?type=DataPipeline], suit continuationUri
+```
+
+**Flux `ensurePipeline(session)`** (nouvelle fonction dans `provision.ts`, appelée paresseusement —
+une fois par session, en mémoire seulement, pas persisté entre redémarrages de VS Code — au premier
+run de requête plutôt qu'à l'activation, sur le modèle du `getSession()` déjà paresseux de
+`extension.ts`) :
+
+1. `listItems('DataPipeline')` sur le workspace configuré, filtrer par `displayName ===
+   GATEPULSE_PIPELINE_NAME`.
+2. **Exactement un match** → réutiliser cet id. Ne pas lui faire confiance aveuglément : passer par
+   `inspectPipeline` (déjà existant) pour vérifier qu'il déclare bien les 3 paramètres et la
+   connexion dynamique. Si l'inspection échoue, **erreur explicite** (nouveau `ErrorKind:
+   'provisioning'`, cf. plus bas) plutôt qu'un re-provisioning silencieux à côté — un pipeline du
+   bon nom mais mal formé doit être corrigé ou renommé à la main, pas dédoublé.
+3. **Zéro match** → relister une dernière fois juste avant la création (réduit la fenêtre de race
+   sans l'éliminer, cf. risques) puis `provisionPipeline(..., displayName: GATEPULSE_PIPELINE_NAME,
+   templatePath: provisioning/pipeline-template.json)`. Informer l'utilisateur qu'un pipeline vient
+   d'être créé (message VS Code + log), création d'un item Fabric = effet de bord réel, jamais
+   silencieux.
+4. **Plusieurs matches** (deux collègues ont perdu la course malgré l'étape 3) → ne rien supprimer
+   automatiquement (suppression = destructif, hors périmètre d'un outil qui doit rester sûr par
+   défaut) ; choisir le plus petit `id` comme gagnant déterministe (mêmes utilisateurs → même choix
+   partout) et loguer un **WARN** explicite listant tous les doublons, pour nettoyage manuel.
+
+**Réglages impactés.** `gatepulse.pipelineId` devient optionnel : vide (nouveau défaut) = résolution
+automatique ; renseigné = override explicite, saute complètement la découverte (échappatoire pour
+debug ou pipeline provisionné à la main). `checkConfig` (`config.ts`) ne doit plus exiger
+`pipelineId` non vide — seuls `tenantId` et `workspaceId` restent obligatoires en amont.
+
+**Taxonomie d'erreurs.** Ajouter `'provisioning'` à `ErrorKind` (`errors.ts`) pour les échecs propres
+à `ensurePipeline` (pipeline candidat mal formé, doublons détectés, échec de création) — distinct de
+`'config'` (réglages manquants/invalides statiquement), cohérent avec la convention déjà posée dans
+`CLAUDE.md` (« un cas dans la taxonomie plutôt qu'un message ad hoc »).
+
+**Risques non résolus, à vérifier empiriquement (même esprit que README §6)** :
+| Sujet | Hypothèse | À vérifier |
+|---|---|---|
+| Unicité du `displayName` | Fabric n'impose probablement pas l'unicité des noms d'items dans un workspace | Si deux créations quasi simultanées passent toutes les deux l'étape 3, le cas "plusieurs matches" (étape 4) doit se déclencher en pratique — à tester avec deux sessions concurrentes |
+| Évolution du pipeline générique entre versions de l'extension | Un pipeline déjà provisionné par une v1 antérieure reste utilisé tel quel, jamais migré automatiquement | Pas traité dans cette conception ; si le template change, `inspectPipeline` (étape 2) doit au moins détecter l'incompatibilité plutôt que de faire tourner silencieusement une requête sur un pipeline obsolète |
+| Droits de création d'item | Le compte doit avoir le droit de créer un `DataPipeline` dans un workspace où il n'est peut-être que lecteur des connexions | À confirmer : quel rôle workspace minimum pour `POST .../items` |
+
+**Dépendance vers le point 2 (multi-tenant).** Résolu par la conception ci-dessous : une bascule de
+tenant reconstruit la session (mécanisme déjà existant, cf. `onDidChangeConfiguration` dans
+`extension.ts`), donc le cache en mémoire d'`ensurePipeline` — attaché à la session — est
+automatiquement réinitialisé à chaque bascule sans code supplémentaire.
+
+### 2. Multi-tenant — conception (2026-09-24)
+
+**Modèle retenu : réglage `gatepulse.tenants`, en User Settings par défaut — pas resource-scope,
+pas `globalState`.** Correction du 2026-09-24 : la première version de cette conception calquait le
+`scope: "resource"` de VaultPulse (vaults déclarés par projet, dans `.vscode/settings.json`), en
+présumant que la réutilisation d'un pipeline déjà provisionné (point 1) exigeait que la
+*déclaration* tenant/workspace soit, elle aussi, partagée via un repo d'équipe. **C'est faux, et
+Yohann l'a corrigé** : GatePulse s'utilise comme l'extension mssql — des requêtes ad hoc lancées
+sans dépendre d'un projet ouvert, souvent hors de tout repo. La réutilisation du pipeline ne dépend
+pas du partage des *réglages* : elle est garantie côté API Fabric par la détection par nom
+(`listItems` + `displayName` fixe, point 1), indépendamment de qui a configuré son instance VS
+Code. Chaque utilisateur renseigne son propre `tenantId`/`workspaceId` (obtenus par un canal
+externe à VS Code — doc interne, Slack…), pas via un fichier partagé.
+
+Le réglage reste un **tableau, éditable directement en JSON** (cohérent avec le modèle de settings
+déjà en place dans GatePulse, et avec la commande `Add Tenant`-style ci-dessous) — mais **sans
+`scope: "resource"`** : par défaut dans `window` (le scope VS Code standard, non restreint), donc
+vit dans les **User Settings**, aucun dossier à ouvrir. Rien n'empêche une surcharge par workspace
+si quelqu'un le veut vraiment (VS Code le permet nativement pour ce scope), mais ce n'est ni requis
+ni le cas d'usage visé — contrairement à `addVaultToWorkspace()` de VaultPulse qui écrit en dur
+dans `ConfigurationTarget.Workspace`, la future commande d'ajout de GatePulse écrira dans
+`ConfigurationTarget.Global`.
+
+**Nouveau réglage `gatepulse.tenants`**, remplace les réglages top-level `tenantId`, `workspaceId`,
+`connectionGuid`, `databaseName`, `pipelineId` (ce dernier objet du point 1) :
+
+```jsonc
+"gatepulse.tenants": {
+  "type": "array",
+  "default": [],
+  "items": {
+    "type": "object",
+    "required": ["alias", "tenantId", "workspaceId"],
+    "properties": {
+      "alias":          { "type": "string", "description": "Nom affiché, ex. \"Client A - Prod\"" },
+      "tenantId":       { "type": "string", "description": "GUID du tenant Entra ID" },
+      "workspaceId":    { "type": "string", "description": "GUID du workspace Fabric (où vit / sera provisionné le pipeline générique)" },
+      "clientId":       { "type": "string", "description": "Optionnel : app registration spécifique à ce tenant (sinon gatepulse.clientId global)" },
+      "pipelineId":     { "type": "string", "description": "Optionnel : override manuel, saute l'auto-provisioning (point 1)" },
+      "connectionGuid": { "type": "string", "description": "Optionnel : connexion gateway pré-remplie dans le panel" },
+      "databaseName":   { "type": "string", "description": "Optionnel : base pré-remplie dans le panel" }
+    }
+  }
+}
+```
+
+**Réglages qui restent globaux** (comportementaux, indépendants du tenant actif) : `authFlow`,
+`clientId` (défaut si l'entrée n'en fournit pas), `scopes`, `pollIntervalMs`, `timeoutMs`,
+`activityNames`, `parameterPayloadFormat`, `parameterNames`, `resultFetchRetries`/`Delay`,
+`logDirectory`, tout `validation.*`.
+
+**`src/core` ne change pas.** `GatePulseConfig` (`config.ts`) garde sa forme plate actuelle — un
+seul tenant à la fois — donc `FabricClient`, `PipelineRunner`, `session.ts` restent inchangés. Le
+multi-tenant est traité **uniquement côté extension** : `readConfig()` se scinde en
+`readGlobalConfig()` (réglages globaux ci-dessus) et `readTenants()` (`gatepulse.tenants`), et une
+nouvelle fonction `buildConfigForTenant(global, tenant): GatePulseConfig` fait la fusion pour
+produire l'objet plat que `createSession()` attend déjà. Rayon d'impact minimal, cohérent avec le
+principe de ne pas refactorer au-delà du besoin.
+
+**Tenant actif et bascule.** Un seul tenant actif à la fois pour le panel (pas plusieurs panels
+concurrents en V1 — question qui recoupe le point 4, non tranchée ici). Nouvelle commande
+`GatePulse: Switch Tenant` (QuickPick sur les `alias`), plus un sélecteur dans le panel lui-même.
+Le choix est mémorisé dans `context.globalState` (pas `workspaceState` : même raisonnement que
+ci-dessus — sans dossier ouvert, l'état de fenêtre est moins fiable d'une session à l'autre que le
+`globalState`, qui suit l'utilisateur partout). Une bascule invalide la session courante et la
+reconstruit — exactement le mécanisme déjà en place dans `extension.ts` (`session = undefined` sur
+`onDidChangeConfiguration`), réutilisé tel quel.
+
+**Commande d'ajout.** `GatePulse: Add Tenant` (inputs successifs ou petit webview — détail UX
+repoussé au point 4) écrit dans `gatepulse.tenants` via
+`config.update(KEY, [...current, entry], vscode.ConfigurationTarget.Global)` — **`Global`, pas
+`Workspace`** contrairement à `addVaultToWorkspace()` de VaultPulse (`src/config.ts:21`), pour la
+même raison que le choix de scope ci-dessus. L'édition manuelle du tableau JSON reste toujours
+possible en complément, comme pour `vaultpulse.vaults`.
+
+**Auth : rien à changer.** `AzureAuthService` (`pulse-core`) met déjà les tokens en cache par
+`tenantId:scope` et `getToken(tenantId, scope)` prend le tenant en paramètre à chaque appel (cf.
+`session.ts`) — la bascule entre tenants n'exige pas de sign-out, le cache existant absorbe déjà
+plusieurs tenants dans le même process. Confirmé par la conception de `pulse-shared`, **pas encore
+vérifié en usage réel avec ≥ 2 tenants côté GatePulse** (mono-tenant jusqu'ici) — à ajouter aux
+risques ci-dessous.
+
+**Validation.** Nouvelle fonction `checkTenants(tenants: TenantEntry[]): string[]`, même style que
+`checkConfig` : réglage vide (aucun tenant déclaré), alias dupliqués (ambigu dans le QuickPick),
+GUID invalides sur `tenantId`/`workspaceId`/`clientId`/`pipelineId`. Appelée avant `checkConfig`.
+
+**Interactions.**
+- Point 1 (provisioning) : `ensurePipeline` tourne sur le workspace du tenant actif ; la
+  réinitialisation de son cache à la bascule est déjà acquise (cf. dépendance résolue ci-dessus).
+- Point 3 (liste dynamique des connexions/pipelines, pas encore conçu) : lira/écrira les mêmes
+  champs optionnels `connectionGuid`/`pipelineId` de l'entrée active, en pré-remplissage.
+- CLI : **aucun impact**, il reste figé sur son `gatepulse.config.json` mono-tenant (décision
+  d'archivage déjà actée).
+
+**Risques à vérifier empiriquement** :
+| Sujet | Hypothèse | À vérifier |
+|---|---|---|
+| Cache d'auth multi-tenant en usage réel | La clé `tenantId:scope` isole correctement N tenants dans le même process | Pas testé côté GatePulse au-delà d'un seul tenant — à valider en configurant 2 tenants réels et en basculant plusieurs fois |
+| Reconstruction de session à la bascule | Un run en cours au moment de la bascule doit être annulé proprement (pattern déjà utilisé pour `onDidChangeConfiguration`, mais jamais déclenché en cours d'exécution active) | À tester : lancer une requête, basculer de tenant avant la fin |
+
+### 3. Liste dynamique des connexions/pipelines — conception (2026-09-24)
+
+**Le volet « pipeline » est déjà couvert par le point 1** : `ensurePipeline` résout/crée le
+pipeline générique automatiquement, la plupart des utilisateurs n'ont jamais besoin d'en choisir
+un. Le seul reliquat, c'est l'override manuel `gatepulse.tenants[].pipelineId` (point 2,
+échappatoire) : plutôt que de faire saisir un GUID à la main, un picker `GatePulse: Pick Pipeline
+(override)` réutilise `listItems('DataPipeline')` (déjà construit pour le point 1) sur le workspace
+du tenant actif. Pas de nouvelle capacité API à ajouter pour ça — uniquement une commande +
+QuickPick côté extension.
+
+**Le volet « connexions » est le vrai travail neuf de ce point.** Aujourd'hui `connectionGuid` est
+un GUID saisi à la main (`gatepulse.tenants[].connectionGuid`, pré-remplissage). Objectif : lister
+les connexions gateway disponibles plutôt que de faire chercher le GUID dans le portail Fabric.
+
+**Nouvelle capacité côté `fabricClient.ts` : `listConnections()`.** Contrairement à `listItems`
+(point 1), une connexion n'est **pas un item de workspace** — elle appartient au tenant/gateway,
+référencée par GUID depuis un pipeline mais listée indépendamment de tout workspace :
+
+```
+async listConnections(): Promise<FabricConnection[]>
+// GET /v1/connections (pas de segment workspaceId), pagination par continuationUri
+// comme listItems (point 1) et le listAll de FabricPulse/src/services/fabricApi.ts
+```
+
+```ts
+interface FabricConnection {
+  id: string;
+  displayName: string;
+  connectivityType: string; // attendu : 'OnPremisesGateway' | 'VirtualNetworkGateway' | 'ShareableCloud' | 'PersonalCloud' — à confirmer
+  gatewayId?: string;
+  connectionDetails?: { type?: string; path?: string }; // connectionDetails.type attendu proche de "Sql" — à confirmer
+}
+```
+
+**Filtrage.** GatePulse n'a de sens que pour les connexions **gateway** vers une base **SQL** — le
+picker (QuickPick, `displayName` + `gatewayId` en detail) ne montre que
+`connectivityType === 'OnPremisesGateway'` et un `connectionDetails.type` de la famille SQL. Les
+connexions cloud/partagées non-gateway (hors du scénario même de GatePulse, cf. README §1) sont
+exclues. Le VNet gateway (`VirtualNetworkGateway`) pourrait entrer dans le même scénario mais n'est
+pas confirmé comme cas d'usage réel — à trancher à l'implémentation si le besoin se présente.
+
+**`databaseName` reste en saisie libre pour la V1.** Fabric ne connaît pas les bases qui existent
+« derrière » une connexion SQL générique — les énumérer demanderait de faire tourner une requête
+(`SELECT name FROM sys.databases`) via le pipeline déjà provisionné, donc un run réel juste pour
+peupler un picker. Amélioration envisageable plus tard (une fois connexion **et** pipeline résolus,
+proposer un picker de bases), explicitement **reportée**, pas conçue ici — ne pas la construire
+maintenant.
+
+**Repli si la liste échoue.** `listConnections()` peut échouer (403 si l'utilisateur n'a pas le
+droit de lister les connexions du tenant, liste vide si aucune connexion gateway n'y est
+enregistrée). Ce n'est jamais bloquant : le picker doit se dégrader en échec silencieux côté
+UX — un WARN dans les logs, et le champ `connectionGuid` reste modifiable à la main, comme
+aujourd'hui. Pas de nouvel `ErrorKind` : ce n'est pas une erreur de run (taxonomie existante
+suffit), juste un WARN de log — cohérent avec le principe « jamais d'échec silencieux, mais pas
+tout ce qui échoue n'est une erreur bloquante non plus ».
+
+**Cache.** Même logique qu'`ensurePipeline` (point 1) : résolu une fois par session, en mémoire
+uniquement, invalidé par une bascule de tenant (point 2) puisque le token utilisé pour l'appel est
+celui du tenant actif. Commande `GatePulse: Refresh Connections` pour forcer un rafraîchissement
+sans redémarrer VS Code.
+
+**Où le GUID choisi est sauvegardé.** « Utiliser pour cette session » (ne touche pas aux réglages)
+vs « Enregistrer par défaut pour ce tenant » (écrit `gatepulse.tenants[i].connectionGuid` via
+`ConfigurationTarget.Global` — jamais `.Workspace`, même correction qu'au point 2). Choix laissé à
+l'utilisateur dans le picker, pas de sauvegarde automatique.
+
+**Interactions.**
+- Point 1 : partage la logique `listItems`/pagination pour le picker de pipeline override.
+- Point 2 : écrit dans les mêmes champs optionnels de `gatepulse.tenants[]`, avec la même règle de
+  scope `Global`. Se réinitialise à chaque bascule de tenant.
+- CLI : **aucun impact**, figé (décision d'archivage déjà actée).
+
+**Risques à vérifier empiriquement** :
+| Sujet | Hypothèse | À vérifier |
+|---|---|---|
+| Endpoint et forme exacte | `GET /v1/connections` existe et retourne `connectivityType`/`connectionDetails.type` sous cette forme | Non testé contre un vrai tenant Fabric — à confronter à l'implémentation dès le premier appel réel, comme les hypothèses du README §6 |
+| Portée du listing | La liste retournée par `/v1/connections` est bien scoping tenant/utilisateur et pas trop large (toutes les connexions de l'organisation, pas seulement celles utiles à GatePulse) | Si trop large en pratique, envisager `/v1/gateways` puis connexions par gateway — non conçu ici, à réévaluer si le filtrage `connectivityType`/`type` ne suffit pas |
+| Droit de lister vs droit d'utiliser | Un utilisateur peut voir une connexion dans la liste sans avoir le droit de l'utiliser dans un pipeline | Le run lui-même reste la seule vérité (comme aujourd'hui, cf. `connection` dans `ErrorKind`) — le picker n'est qu'un confort, jamais une garantie |
+
+### 4. UX du panel — conception (2026-09-24)
+
+État des lieux : `panel.ts`/`panel.js`/`panel.css` sont entièrement façonnés par le PoC — 5 boutons
+de scénario P1-P4, chips de verdicts, décomposition de latence (file Fabric/run Fabric/polls),
+sous-titre « démo ». Rien de tout ça ne s'adresse à un data engineer qui veut juste exécuter une
+requête au quotidien. Prérequis : l'extraction de `runSingle` hors de `scenarios.ts` (cf.
+correction ci-dessus, section CLI).
+
+**A. Ce qui sort du panel.** Les 5 boutons de scénario (`panel.ts:194-198`, `panel.js:60-62`) et
+tout leur rendu associé : la branche « scenario » de `renderReport` (`panel.js:166-178`, un
+`<details>` par run avec chips PASS/FAIL par point) et les chips de verdicts P1-P4
+(`panel.js:153-156`) — ce code appelle des fonctions maintenant gelées. Le sous-titre « SQL via
+Fabric Gateway — démo » (`panel.ts:177`) perd « démo ».
+
+**B. Ce qui reste — et se reformule.** `pipelineRunner.ts` (pas gelé) peuple `ExecutionReport.checks`
+sur **chaque** run, y compris un simple `run` — pas seulement dans les scénarios. Certains de ces
+checks sont un vrai signal opérationnel au quotidien, pas un artefact PoC :
+- `SILENT_FAILURE` / `ROW_CAP` en WARN : troncature silencieuse à 5000 lignes sans erreur Fabric —
+  un piège réel pour qui écrit `SELECT *` sans `TOP`, à afficher en évidence, pas dans un coin.
+- `PARAM_BINDING` en FAIL : la requête envoyée via l'API n'est pas celle exécutée (le pipeline a
+  tourné sur une valeur par défaut) — silencieux aujourd'hui dans le flot normal, doit remonter.
+- À l'inverse, `API_TRIGGER`/`API_RESULT` en PASS sont de la plomberie utile en debug, pas au
+  quotidien.
+
+Règle retenue : plus de vocabulaire « P1/P2 » mis en avant dans l'UI (c'était un langage pour
+public de démo) — un **bandeau d'alerte** au-dessus des résultats quand un check FAIL/WARN existe
+(reformulé en langage utilisateur, pas en `ROW_CAP WARN`), et une section **« Diagnostics »**
+repliée par défaut qui garde tous les checks (y compris PASS/INFO) pour qui creuse un problème.
+Rien n'est supprimé du modèle de données (`ExecutionReport.checks` ne change pas), seule la
+priorité d'affichage change.
+
+**C. Nouvelles zones issues des points 1-3.**
+- *Tenant* : sélecteur en haut du panel (les `alias` de `gatepulse.tenants`), plus une commande
+  `GatePulse: Switch Tenant` (point 2). État vide guidé si `gatepulse.tenants` est vide — un vrai
+  parcours d'accueil, pas juste le bandeau d'erreur générique `configProblems` actuel.
+  `refreshDefaults()` (`panel.ts:79`) devra inclure la liste des tenants et l'actif, pas seulement
+  `connectionGuid`/`databaseName`.
+- *Connexion* : le champ texte `connectionGuid` reste (repli toujours possible, point 3) mais gagne
+  un bouton « Parcourir… » ouvrant le picker de connexions gateway. Pas de composant équivalent
+  pour un pipeline autre que l'auto-provisionné — l'override pipeline (rare) reste une commande
+  dédiée, hors du flux principal, pour ne pas charger l'écran de tous les jours.
+- *Provisioning* (point 1) : première utilisation sur un tenant → message explicite avant le
+  premier run (« Pipeline GatePulse provisionné automatiquement dans le workspace X ») plutôt
+  qu'un simple log — sans ça, le premier run paraît juste plus lent sans explication.
+
+**D. Confort quotidien — le contenu vraiment neuf de ce point.**
+1. **Historique de requêtes.** Dernières requêtes exécutées, par tenant, ré-exécutables en un
+   clic. Stocké en `context.globalState` (même règle qu'au point 2 : pas `workspaceState`, l'outil
+   s'utilise sans dossier ouvert), clé dédiée, **cap strict à N entrées** (ex. 50, FIFO) pour rester
+   dans les limites pratiques de `globalState`. Chaque entrée : texte de la requête, horodatage,
+   alias du tenant/connexion utilisés, statut, durée — **jamais le contenu du résultat** (pas de
+   duplication de données potentiellement volumineuses ou sensibles dans le state de l'extension).
+2. **Export CSV du résultat affiché.** Bouton sur chaque table de résultat, écrit via
+   `vscode.window.showSaveDialog` (action explicite de l'utilisateur, jamais d'écriture silencieuse
+   sur disque). Le tri/filtre de colonnes ou la copie de cellule sont un confort secondaire, pas
+   requis pour la V1 — à ajouter plus tard si le besoin se confirme à l'usage.
+3. **Persistance de saisie** (déjà là via `vscode.getState()`/`setState()` sur
+   `connectionGuid`/`databaseName`/`query`) : étendre au tenant actif sélectionné, toujours côté
+   état de webview, pas réglages.
+
+**E. Explicitement hors périmètre de ce point** (pour ne pas dériver) :
+- Multi-requêtes / multi-onglets simultanés — un seul éditeur de requête, comme aujourd'hui.
+- Autocomplétion SQL / coloration syntaxique avancée (style mssql/DataGrip) — chantier disproportionné pour « confortable », non demandé.
+- Requêtes nommées/favoris au-delà du simple historique — piste V2 si le besoin se confirme à l'usage.
+
+**Interactions.**
+- Point 1 : le bandeau de provisioning s'affiche avant le premier run sur un tenant donné.
+- Points 2 et 3 : fournissent les données (tenants, connexions) que le panel affiche ; le panel ne
+  redéfinit aucune règle de stockage, il consomme ce qui est déjà décidé (`Global`, jamais
+  `Workspace`/`resource`).
+- CLI : aucun impact, figé.
+
+**Risque à vérifier** : la taille de l'historique dans `globalState` reste dans les limites
+pratiques de VS Code avec le cap proposé (50 entrées de texte court) — à confirmer à
+l'implémentation, pas un doute de conception.
+
+## Explicitement hors périmètre V1
+
+- Gros volumes / Copy vers Lakehouse (inchangé depuis le PoC).
+- Création de workspace Fabric par l'extension (l'utilisateur le fournit toujours).
+- Marketplace public / distribution externe.
+
+## Prochaines étapes proposées
+
+1. ~~Trancher le devenir du CLI de validation~~ — fait, cf. ci-dessus (archivé, gelé).
+2. ~~Concevoir le flux d'auto-provisioning~~ — fait, cf. section 1 ci-dessus. Reste à implémenter :
+   `listItems` (`fabricClient.ts`), `ensurePipeline` (`provision.ts`), `ErrorKind: 'provisioning'`
+   (`errors.ts`), relâchement de `checkConfig` sur `pipelineId`.
+3. ~~Définir le modèle de settings multi-tenant~~ — fait, cf. section 2 ci-dessus. Reste à
+   implémenter : réglage `gatepulse.tenants`, `readGlobalConfig`/`readTenants`/
+   `buildConfigForTenant` (`extension.ts`), `checkTenants` (`config.ts`), commande
+   `gatepulse.switchTenant` + sélecteur dans le panel, suppression des réglages top-level
+   `tenantId`/`workspaceId`/`connectionGuid`/`databaseName`/`pipelineId`.
+4. ~~Concevoir la découverte dynamique des connexions/pipelines~~ — fait, cf. section 3 ci-dessus.
+   Reste à implémenter : `listConnections` (`fabricClient.ts`), commandes `GatePulse: Pick
+   Connection` / `Pick Pipeline (override)` / `Refresh Connections`, dégradation en saisie libre si
+   le listing échoue.
+5. ~~Spécifier l'UX v1 du panel~~ — fait, cf. section 4 ci-dessus. Reste à implémenter : extraction
+   de `runSingle` hors de `scenarios.ts` (préalable), retrait des boutons/rendus P1-P4 du webview,
+   bandeau d'alerte + section Diagnostics repliée, sélecteur de tenant + picker de connexion,
+   bandeau de provisioning, historique de requêtes (`globalState`, cap 50), export CSV.
+6. `git init` local (sans remote) quand le travail de code démarre.
+7. Les quatre points (1-4) sont maintenant conçus. Prochaine décision : lancer l'implémentation
+   (probablement dans l'ordre 1 → 2 → 3 → 4, chaque point s'appuyant sur le précédent), ou
+   `git init` d'abord.

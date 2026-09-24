@@ -1,0 +1,11 @@
+node_modules/
+dist/
+out/
+*.vsix
+*.js.map
+.vscode-test/
+
+# Démo : config renseignée localement et journaux de run
+logs/
+.gatepulse/
+gatepulse.config.json
