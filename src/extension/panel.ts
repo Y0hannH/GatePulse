@@ -5,7 +5,6 @@ import * as vscode from 'vscode';
 import type { TenantEntry } from '../core/config';
 import { checkConfig, checkTenants, isGuid } from '../core/config';
 import { serializeError } from '../core/errors';
-import { ensurePipeline } from '../core/provision';
 import { listDatabases, runSingle } from '../core/runQuery';
 import type { ScenarioContext, ScenarioReport } from '../core/scenarios';
 import type { Session } from '../core/session';
@@ -44,11 +43,17 @@ export class SqlPanel {
   /** Avoids piling up duplicate requests when auto-fetch and a manual refresh race each other. */
   private readonly databasesInFlight = new Set<string>();
 
+  /** Set right before a fresh panel's webview has finished loading (e.g. a schema-tree table
+   *  click): `prefillQuery()` posts immediately too, but that post is lost if the webview's own
+   *  message listener isn't attached yet — 'ready' re-sends whatever is still pending here. */
+  private pendingPrefill: { connectionGuid: string; databaseName: string; query: string } | undefined;
+
   static show(
     context: vscode.ExtensionContext,
     getSession: () => Session,
     getTenants: () => TenantEntry[],
     getActiveTenantAlias: () => string,
+    ensurePipelineResolved: (session: Session) => Promise<void>,
     channel: vscode.OutputChannel,
   ): void {
     if (SqlPanel.current) {
@@ -71,6 +76,7 @@ export class SqlPanel {
       getSession,
       getTenants,
       getActiveTenantAlias,
+      ensurePipelineResolved,
       channel,
     );
   }
@@ -81,6 +87,7 @@ export class SqlPanel {
     private readonly getSession: () => Session,
     private readonly getTenants: () => TenantEntry[],
     private readonly getActiveTenantAlias: () => string,
+    private readonly ensurePipelineResolved: (session: Session) => Promise<void>,
     private readonly channel: vscode.OutputChannel,
   ) {
     panel.webview.html = this.html();
@@ -89,6 +96,13 @@ export class SqlPanel {
       SqlPanel.current = undefined;
     });
     panel.webview.onDidReceiveMessage((m: FromWebview) => void this.onMessage(m));
+  }
+
+  /** Prefills the editor from outside (schema-tree table click) — 'ready' flushes this if the
+   *  webview wasn't loaded yet when this was called (see `pendingPrefill`). */
+  prefillQuery(connectionGuid: string, databaseName: string, query: string): void {
+    this.pendingPrefill = { connectionGuid, databaseName, query };
+    void this.post({ type: 'prefillQuery', connectionGuid, databaseName, query });
   }
 
   /** Called after a tenant switch or a settings change — same entry point either way. */
@@ -122,7 +136,12 @@ export class SqlPanel {
   private async onMessage(m: FromWebview): Promise<void> {
     switch (m.type) {
       case 'ready':
-        return this.refreshDefaults();
+        this.refreshDefaults();
+        if (this.pendingPrefill) {
+          void this.post({ type: 'prefillQuery', ...this.pendingPrefill });
+          this.pendingPrefill = undefined;
+        }
+        return;
       case 'cancel':
         this.controller?.abort();
         return;
@@ -144,19 +163,6 @@ export class SqlPanel {
         return this.handleListDatabases(m);
       case 'run':
         return this.execute(m);
-    }
-  }
-
-  /** Resolves and caches the pipeline id on `session.cfg` — shared by a query run and a database
-   *  listing, since both need a working pipeline before they can execute anything (V1-SCOPE.md §1). */
-  private async ensurePipelineResolved(session: Session): Promise<void> {
-    if (session.cfg.pipelineId) return;
-    const resolved = await ensurePipeline(session.client, session.logger, session.cfg.parameterNames);
-    session.cfg.pipelineId = resolved.id;
-    if (resolved.created) {
-      void vscode.window.showInformationMessage(
-        `GatePulse : pipeline "${resolved.displayName}" provisionné automatiquement dans ce workspace.`,
-      );
     }
   }
 

@@ -148,6 +148,13 @@
         persist();
         requestDatabases(false);
         break;
+      case 'prefillQuery':
+        inputs.connectionGuid.value = m.connectionGuid;
+        inputs.databaseName.value = m.databaseName;
+        cm.setValue(m.query);
+        persist();
+        requestDatabases(false);
+        break;
       case 'databasesLoading':
         if (m.connectionGuid === inputs.connectionGuid.value.trim()) setDatabasesLoading(true);
         break;
@@ -192,33 +199,50 @@
   }
 
   // ---------------------------------------------------------------- history
+  /** Clicking a row loads it into the editor for review — it does NOT run it. The inline ▶ button
+   *  is the one-click "load and run" shortcut, for when you do trust it as-is. */
   function renderHistory(entries) {
     const section = $('history');
     section.classList.toggle('hidden', entries.length === 0);
     $('historyList').replaceChildren(
-      ...entries.map((h) =>
-        el(
+      ...entries.map((h) => {
+        const load = () => {
+          inputs.connectionGuid.value = h.connectionGuid;
+          inputs.databaseName.value = h.databaseName;
+          cm.setValue(h.query);
+          persist();
+          requestDatabases(false);
+        };
+        return el(
           'li',
-          {
-            onclick: () => {
-              inputs.connectionGuid.value = h.connectionGuid;
-              inputs.databaseName.value = h.databaseName;
-              cm.setValue(h.query);
-              persist();
-              requestDatabases(false);
-              run();
-            },
-          },
-          el('span', { className: h.succeeded ? '' : 'failed-marker' }, h.succeeded ? '✓' : '✗'),
-          ' ',
-          el('code', {}, h.query.length > 80 ? `${h.query.slice(0, 80)}…` : h.query),
+          { className: 'history-item', onclick: load, title: "Charger dans l'éditeur sans exécuter" },
           el(
-            'span',
-            { className: 'meta' },
-            `${h.tenantAlias} — ${new Date(h.timestamp).toLocaleString()}${h.durationMs !== undefined ? ` — ${(h.durationMs / 1000).toFixed(1)} s` : ''}`,
+            'div',
+            { className: 'history-text' },
+            el('span', { className: h.succeeded ? '' : 'failed-marker' }, h.succeeded ? '✓' : '✗'),
+            ' ',
+            el('code', {}, h.query.length > 80 ? `${h.query.slice(0, 80)}…` : h.query),
+            el(
+              'span',
+              { className: 'meta' },
+              `${h.tenantAlias} — ${new Date(h.timestamp).toLocaleString()}${h.durationMs !== undefined ? ` — ${(h.durationMs / 1000).toFixed(1)} s` : ''}`,
+            ),
           ),
-        ),
-      ),
+          el(
+            'button',
+            {
+              className: 'icon-btn secondary history-run',
+              title: 'Charger et exécuter',
+              onclick: (e) => {
+                e.stopPropagation();
+                load();
+                run();
+              },
+            },
+            icon('play'),
+          ),
+        );
+      }),
     );
   }
 

@@ -220,7 +220,9 @@ td.null { opacity: 0.45; font-style: italic; }
 details.diagnostics summary, details.history summary { cursor: pointer; opacity: 0.85; font-size: 0.9em; font-weight: 500; }
 details.diagnostics[open] summary, details.history[open] summary { margin-bottom: 8px; }
 .history ul { list-style: none; padding: 0; margin: 0; font-size: 0.9em; }
-.history li { padding: 6px 4px; cursor: pointer; border-radius: var(--gp-radius-sm); }
+.history li { display: flex; align-items: center; gap: 8px; padding: 6px 4px; cursor: pointer; border-radius: var(--gp-radius-sm); }
 .history li:hover { background: var(--vscode-list-hoverBackground); }
+.history-text { flex: 1; min-width: 0; }
 .history li .failed-marker { color: var(--vscode-errorForeground); }
 .history li .meta { opacity: 0.65; margin-left: 6px; margin-top: 0; }
+button.history-run { flex-shrink: 0; height: 24px; width: 24px; padding: 0; }

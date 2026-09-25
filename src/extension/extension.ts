@@ -8,10 +8,32 @@ import type { FabricConnection } from '../core/fabricClient';
 import { isSupportedSqlConnection } from '../core/fabricClient';
 import type { LogEntry, LogSink } from '../core/logger';
 import { formatEntry } from '../core/logger';
+import { ensurePipeline } from '../core/provision';
+import type { ColumnInfo, SchemaObject } from '../core/runQuery';
+import { listColumns, listDatabases, listSchemaObjects } from '../core/runQuery';
+import type { ScenarioContext } from '../core/scenarios';
 import type { Session } from '../core/session';
 import { createSession } from '../core/session';
 import { SqlPanel } from './panel';
 import { TenantTreeProvider } from './tenantTree';
+
+/** Resolves and caches the pipeline id on `session.cfg` — shared by a query run, the panel's
+ *  database picker, and the sidebar's schema tree, since all three need a working pipeline before
+ *  they can execute anything (V1-SCOPE.md §1). */
+async function ensurePipelineResolved(session: Session): Promise<void> {
+  if (session.cfg.pipelineId) return;
+  const resolved = await ensurePipeline(session.client, session.logger, session.cfg.parameterNames);
+  session.cfg.pipelineId = resolved.id;
+  if (resolved.created) {
+    void vscode.window.showInformationMessage(
+      `GatePulse : pipeline "${resolved.displayName}" provisionné automatiquement dans ce workspace.`,
+    );
+  }
+}
+
+function scenarioContext(session: Session): ScenarioContext {
+  return { cfg: session.cfg, runner: session.runner, client: session.client, logger: session.logger };
+}
 
 class OutputChannelSink implements LogSink {
   constructor(private readonly channel: vscode.OutputChannel) {}
@@ -136,15 +158,21 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   const getActiveTenantAlias = (): string => getActiveTenant(context, readTenants()).alias;
-  const tenantTree = new TenantTreeProvider(readTenants, getActiveTenantAlias);
-  const tenantTreeView = vscode.window.createTreeView('gatepulse.tenantsView', {
-    treeDataProvider: tenantTree,
-  });
+
+  // Schema-tree caches — separate from SqlPanel's own database cache (the tree exists even when the
+  // panel is closed) and from cachedConnections (unrelated data). Keyed so a database's schema list
+  // and a table's columns are each fetched once per session, not once per tree render.
+  const schemaCache = new Map<string, SchemaObject[]>(); // `${connectionGuid}:${databaseName}`
+  const columnsCache = new Map<string, ColumnInfo[]>(); // `${connectionGuid}:${databaseName}:${schema}:${table}`
+  const treeDatabaseCache = new Map<string, string[]>(); // `${connectionGuid}`
 
   /** Invalidates the cached session (tenant or settings changed) and refreshes the panel/tree if open. */
   const invalidateSession = (): void => {
     session = undefined; // rebuilt lazily; tokens are in memory, so sign-in happens again
     cachedConnections = undefined;
+    schemaCache.clear();
+    columnsCache.clear();
+    treeDatabaseCache.clear();
     SqlPanel.current?.refreshDefaults();
     tenantTree.refresh();
   };
@@ -171,6 +199,62 @@ export function activate(context: vscode.ExtensionContext): void {
     return cachedConnections;
   };
 
+  // Expanding a tenant's node in the sidebar tree makes it the active tenant first — GatePulse has
+  // one active tenant at a time (V1-SCOPE.md §2), so "browse this tenant's schema" and "this is the
+  // tenant I'm working with" are the same action already used by clicking its row.
+  const ensureActiveTenantForTree = async (alias: string): Promise<void> => {
+    if (alias !== getActiveTenantAlias()) await switchToTenant(alias);
+  };
+
+  const treeListDatabases = async (connectionGuid: string): Promise<string[]> => {
+    const cached = treeDatabaseCache.get(connectionGuid);
+    if (cached) return cached;
+    const s = getSession();
+    await ensurePipelineResolved(s);
+    const names = await listDatabases(scenarioContext(s), connectionGuid, '');
+    treeDatabaseCache.set(connectionGuid, names);
+    return names;
+  };
+
+  const treeListObjects = async (connectionGuid: string, databaseName: string): Promise<SchemaObject[]> => {
+    const key = `${connectionGuid}:${databaseName}`;
+    const cached = schemaCache.get(key);
+    if (cached) return cached;
+    const s = getSession();
+    await ensurePipelineResolved(s);
+    const objects = await listSchemaObjects(scenarioContext(s), connectionGuid, databaseName);
+    schemaCache.set(key, objects);
+    return objects;
+  };
+
+  const treeListColumns = async (
+    connectionGuid: string,
+    databaseName: string,
+    schema: string,
+    table: string,
+  ): Promise<ColumnInfo[]> => {
+    const key = `${connectionGuid}:${databaseName}:${schema}:${table}`;
+    const cached = columnsCache.get(key);
+    if (cached) return cached;
+    const s = getSession();
+    await ensurePipelineResolved(s);
+    const columns = await listColumns(scenarioContext(s), connectionGuid, databaseName, schema, table);
+    columnsCache.set(key, columns);
+    return columns;
+  };
+
+  const tenantTree = new TenantTreeProvider(
+    readTenants,
+    getActiveTenantAlias,
+    ensureActiveTenantForTree,
+    treeListDatabases,
+    treeListObjects,
+    treeListColumns,
+  );
+  const tenantTreeView = vscode.window.createTreeView('gatepulse.tenantsView', {
+    treeDataProvider: tenantTree,
+  });
+
   context.subscriptions.push(
     tenantTreeView,
     vscode.workspace.onDidChangeConfiguration((e) => {
@@ -178,12 +262,38 @@ export function activate(context: vscode.ExtensionContext): void {
       invalidateSession();
     }),
     vscode.commands.registerCommand('gatepulse.openPanel', () =>
-      SqlPanel.show(context, getSession, readTenants, getActiveTenantAlias, channel),
+      SqlPanel.show(context, getSession, readTenants, getActiveTenantAlias, ensurePipelineResolved, channel),
     ),
     // Sidebar tree row click: one step from "pick a tenant" to "query it", no palette involved.
     vscode.commands.registerCommand('gatepulse.openTenant', async (alias: string) => {
       if (alias !== getActiveTenantAlias()) await switchToTenant(alias);
-      SqlPanel.show(context, getSession, readTenants, getActiveTenantAlias, channel);
+      SqlPanel.show(context, getSession, readTenants, getActiveTenantAlias, ensurePipelineResolved, channel);
+    }),
+    // Sidebar tree table/view click: one step further than openTenant — also fills the panel's
+    // connection/database/query so the "browse" and "query" flows meet in one click.
+    vscode.commands.registerCommand(
+      'gatepulse.openTableQuery',
+      async (args: {
+        alias: string;
+        connectionGuid: string;
+        databaseName: string;
+        schema: string;
+        table: string;
+      }) => {
+        if (args.alias !== getActiveTenantAlias()) await switchToTenant(args.alias);
+        SqlPanel.show(context, getSession, readTenants, getActiveTenantAlias, ensurePipelineResolved, channel);
+        SqlPanel.current?.prefillQuery(
+          args.connectionGuid,
+          args.databaseName,
+          `SELECT TOP 100 * FROM [${args.schema}].[${args.table}]`,
+        );
+      },
+    ),
+    vscode.commands.registerCommand('gatepulse.refreshSchemaTree', () => {
+      schemaCache.clear();
+      columnsCache.clear();
+      treeDatabaseCache.clear();
+      tenantTree.refresh();
     }),
     vscode.commands.registerCommand('gatepulse.showLogs', () => channel.show()),
     vscode.commands.registerCommand('gatepulse.signOut', async () => {

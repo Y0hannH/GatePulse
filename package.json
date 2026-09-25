@@ -52,6 +52,15 @@
         "title": "GatePulse: Open Tenant"
       },
       {
+        "command": "gatepulse.openTableQuery",
+        "title": "GatePulse: Query Table"
+      },
+      {
+        "command": "gatepulse.refreshSchemaTree",
+        "title": "GatePulse: Refresh Schema Tree",
+        "icon": "$(refresh)"
+      },
+      {
         "command": "gatepulse.signOut",
         "title": "GatePulse: Sign Out",
         "icon": "$(sign-out)"
@@ -91,6 +100,10 @@
         {
           "command": "gatepulse.openTenant",
           "when": "false"
+        },
+        {
+          "command": "gatepulse.openTableQuery",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -110,7 +123,7 @@
           "group": "navigation@3"
         },
         {
-          "command": "gatepulse.refreshConnections",
+          "command": "gatepulse.refreshSchemaTree",
           "when": "view == gatepulse.tenantsView",
           "group": "navigation@4"
         },

@@ -68,19 +68,97 @@ export async function listDatabases(
   connectionGuid: string,
   databaseNameHint: string,
 ): Promise<string[]> {
-  const report = await ctx.runner.execute(
+  const rows = await runDiscoveryQuery(
+    ctx,
     { connectionGuid, databaseName: databaseNameHint.trim() || 'master', query: LIST_DATABASES_QUERY },
-    { signal: ctx.signal, runLabel: `list-databases-${randomUUID().slice(0, 6)}` },
+    'list-databases',
   );
-  if (!report.succeeded) {
-    throw new GatePulseError(
-      report.error?.kind ?? 'unexpected',
-      report.error?.message ?? 'Could not list databases',
-    );
-  }
-  const names = report.activities
-    .flatMap((a) => a.rows)
-    .map((r) => r.name)
-    .filter((n): n is string => typeof n === 'string');
+  const names = rows.map((r) => r.name).filter((n): n is string => typeof n === 'string');
   return [...new Set(names)].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+}
+
+/** Runs one query and throws GatePulseError with the run's own error on failure — shared shape for
+ *  every "discover metadata" helper below (databases, schema objects, columns). */
+async function runDiscoveryQuery(
+  ctx: ScenarioContext,
+  params: QueryParams,
+  runLabelPrefix: string,
+): Promise<Record<string, unknown>[]> {
+  const report = await ctx.runner.execute(params, {
+    signal: ctx.signal,
+    runLabel: `${runLabelPrefix}-${randomUUID().slice(0, 6)}`,
+  });
+  if (!report.succeeded) {
+    throw new GatePulseError(report.error?.kind ?? 'unexpected', report.error?.message ?? 'Query failed');
+  }
+  return report.activities.flatMap((a) => a.rows);
+}
+
+export interface SchemaObject {
+  schema: string;
+  name: string;
+  type: 'table' | 'view';
+}
+
+/** INFORMATION_SCHEMA is standard SQL — works the same across the databases of one SQL Server
+ *  instance, unlike sys.databases which is instance-wide. Tables and views come back in one round
+ *  trip (TABLE_TYPE distinguishes them) since each is a real pipeline run — worth minimizing. */
+const LIST_SCHEMA_OBJECTS_QUERY =
+  'SELECT TABLE_SCHEMA AS schemaName, TABLE_NAME AS objectName, TABLE_TYPE AS objectType ' +
+  'FROM INFORMATION_SCHEMA.TABLES ORDER BY TABLE_SCHEMA, TABLE_NAME';
+
+/** Lists tables and views of one database, for the sidebar's schema tree (V1-SCOPE.md §4, point D). */
+export async function listSchemaObjects(
+  ctx: ScenarioContext,
+  connectionGuid: string,
+  databaseName: string,
+): Promise<SchemaObject[]> {
+  const rows = await runDiscoveryQuery(
+    ctx,
+    { connectionGuid, databaseName, query: LIST_SCHEMA_OBJECTS_QUERY },
+    'list-objects',
+  );
+  return rows
+    .map((r) => ({
+      schema: String(r.schemaName ?? ''),
+      name: String(r.objectName ?? ''),
+      type: (String(r.objectType ?? '').toUpperCase().includes('VIEW') ? 'view' : 'table') as
+        | 'table'
+        | 'view',
+    }))
+    .filter((o) => o.schema && o.name);
+}
+
+export interface ColumnInfo {
+  name: string;
+  dataType: string;
+  nullable: boolean;
+}
+
+/** Single-quotes in a schema/table name (rare, but SQL Server quoted identifiers allow it) doubled
+ *  to stay a valid string literal — these values come from our own listSchemaObjects(), not raw
+ *  user input, but escaping costs nothing and avoids a broken query either way. */
+function sqlStringLiteral(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+/** Lists one table/view's columns, for the sidebar's schema tree — lazy, one table at a time (never
+ *  all tables' columns up front: that would be one pipeline run per table for nothing).  */
+export async function listColumns(
+  ctx: ScenarioContext,
+  connectionGuid: string,
+  databaseName: string,
+  schema: string,
+  table: string,
+): Promise<ColumnInfo[]> {
+  const query =
+    'SELECT COLUMN_NAME AS columnName, DATA_TYPE AS dataType, IS_NULLABLE AS isNullable ' +
+    `FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ${sqlStringLiteral(schema)} ` +
+    `AND TABLE_NAME = ${sqlStringLiteral(table)} ORDER BY ORDINAL_POSITION`;
+  const rows = await runDiscoveryQuery(ctx, { connectionGuid, databaseName, query }, 'list-columns');
+  return rows.map((r) => ({
+    name: String(r.columnName ?? ''),
+    dataType: String(r.dataType ?? ''),
+    nullable: String(r.isNullable ?? '').toUpperCase() === 'YES',
+  }));
 }
