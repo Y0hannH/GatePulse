@@ -12,6 +12,7 @@ export type ErrorKind =
   | 'cancelled' // user cancelled or job cancelled
   | 'deduped' // Fabric deduplicated the job instance (relevant for concurrency)
   | 'sql' // the database rejected the query
+  | 'unsupportedType' // a selected column's data type can't be transferred by Lookup/Script (e.g. varbinary, image, xml)
   | 'resultTooLarge' // Lookup output over 4 MB (4194304 bytes): the run fails, nothing is returned
   | 'connection' // gateway / connection GUID / credentials problem
   | 'pipelineFailed' // pipeline failed for another reason
@@ -73,6 +74,10 @@ const CONNECTION_PATTERNS = [
   /InvalidConnection|ConnectionNotFound|SqlFailedToConnect|UserErrorFailedToConnect/i,
   /credential/i,
 ];
+// HybridDeliveryException, not a SqlException — checked before SQL_PATTERNS so it doesn't fall
+// through to a generic SQL error (the message itself never fails to parse; the column's type is
+// just one the Lookup/Copy data transfer engine can't move, regardless of connector).
+const UNSUPPORTED_TYPE_PATTERNS = [/DataTypeNotSupported/i, /data type \w+ is not supported/i];
 const SQL_PATTERNS = [
   /incorrect syntax/i,
   /invalid object name/i,
@@ -95,6 +100,7 @@ export function classifyActivityError(message: string, errorCode?: string): Erro
     return 'resultTooLarge';
   // "Login failed" is reported through SqlException too: check connection patterns first.
   if (CONNECTION_PATTERNS.some((p) => p.test(haystack))) return 'connection';
+  if (UNSUPPORTED_TYPE_PATTERNS.some((p) => p.test(haystack))) return 'unsupportedType';
   if (SQL_PATTERNS.some((p) => p.test(haystack))) return 'sql';
   return 'pipelineFailed';
 }
