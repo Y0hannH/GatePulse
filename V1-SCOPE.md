@@ -451,10 +451,52 @@ priorité d'affichage change.
    d'historique ne lance plus la requête — elle est seulement chargée dans l'éditeur pour relecture/
    modification. Un bouton ▶ inline par entrée garde le comportement « charger et exécuter en un
    clic » pour qui le veut toujours.
+7. **Caches partagés + persistance disque (2026-09-25), demande explicite de Yohann** (premier
+   retour à l'usage du point 5 : « pourquoi ne pas alimenter la liste des bases du panel avec ce qui
+   est déjà en mémoire », « je redéplie l'arbre après un reload et ça re-fetch »).
+   - **Un seul cache par type, partagé panel + arbre.** `SqlPanel` avait son propre
+     `databaseCache` en plus de celui de l'arbre — les deux faisaient la même requête pour la même
+     connexion. Unifié : `extension.ts` possède maintenant les trois `Map` (bases, objets, colonnes)
+     et les injecte aux deux surfaces via une interface `PanelServices` (remplace les 5 paramètres
+     positionnels de `SqlPanel.show`/son constructeur). Le panel ne connaît plus de cache à lui.
+   - **Persisté dans `context.globalState`** (clé `gatepulse.schemaMetadataCache`), chargé au
+     démarrage de l'extension — un reload de VS Code ne perd plus ce qui a déjà été découvert.
+     Nouveau réglage **`gatepulse.cacheSchemaMetadata`** (bool, défaut `true`) : off = cache mémoire
+     seulement pour la session courante (rien écrit sur disque, tout perdu au reload, comme avant) ;
+     désactiver le réglage efface aussi la copie déjà sur disque. « GatePulse: Refresh Schema Tree »
+     force toujours un re-fetch complet, réglage ou pas.
+   - **Correction d'un bug introduit au point 5** : `invalidateSession()` (déclenchée à chaque
+     bascule de tenant) vidait ces trois caches — alors qu'ils sont indexés par `connectionGuid`, pas
+     par tenant, donc valides quel que soit le tenant actif. Ça forçait un re-fetch à chaque
+     va-et-vient entre deux tenants même sur la même connexion. Retiré de `invalidateSession()` ;
+     seuls le bouton refresh et la désactivation du réglage les vident maintenant.
+8. **Autocomplétion SQL (2026-09-25), demande explicite de Yohann** — retire la ligne « chantier
+   disproportionné, non demandé » de la section E ci-dessous, ex-point non retenu à la conception
+   initiale du point 4. Ctrl+Space (et auto-déclenchement après un `.`) dans l'éditeur : noms de
+   table/vue en saisie libre, colonnes après `table.`. CodeMirror 5 addon `show-hint` vendoré (voir
+   `VENDORED.md`) avec une fonction de hint entièrement custom côté `panel.js` (pas `sql-hint.js`,
+   trop générique — pas conscient du schéma) ; async, `postMessage`/réponse vers les mêmes
+   `getSchemaObjects`/`getColumns` du point 7. Cache côté webview à un seul niveau (« schéma
+   courant ») : suffisant, le vrai cache anti-refetch est déjà côté extension (point 7).
+9. **Colonnes non transférables (2026-09-25), incident réel de Yohann** : `ThumbNailPhoto`
+   (`varbinary(max)`) a fait échouer un `SELECT *` avec `ErrorCode=DataTypeNotSupported` — le moteur
+   de transfert du Lookup/Script ne sait pas déplacer certains types (binaire, XML, geography,
+   sql_variant...). Deux réponses :
+   - Nouveau `ErrorKind: 'unsupportedType'` (`errors.ts`), détecté par un motif regex distinct de
+     `SqlException` (c'est une `HybridDeliveryException`, pas une erreur SQL) — message et piste
+     d'action dédiés dans le panel au lieu de tomber dans `pipelineFailed` générique.
+   - `gatepulse.openTableQuery` (clic sur une table/vue dans l'arbre) génère maintenant une liste de
+     colonnes explicite plutôt que `*` **si et seulement si** au moins une colonne du type exclu
+     (`UNSELECTABLE_COLUMN_TYPES`, `extension.ts`) est présente — sinon `SELECT TOP 100 *` reste tel
+     quel, pas de verbosité inutile. Ne couvre que les requêtes générées depuis l'arbre ; une requête
+     tapée à la main avec `SELECT *` peut toujours heurter ce mur, message d'erreur clair à défaut.
+10. **Diagnostics masqué en cas d'échec (2026-09-25), demande explicite de Yohann.** La section
+    Diagnostics (tous les checks, y compris PASS/INFO) ne s'affiche plus quand le run a échoué — le
+    bandeau d'erreur rouge dit déjà l'essentiel, Diagnostics n'ajoutait que du bruit à côté. Reste
+    affiché comme avant sur un run réussi (c'est là qu'il sert : confirmer que tout est net).
 
 **E. Explicitement hors périmètre de ce point** (pour ne pas dériver) :
 - Multi-requêtes / multi-onglets simultanés — un seul éditeur de requête, comme aujourd'hui.
-- Autocomplétion SQL / coloration syntaxique avancée (style mssql/DataGrip) — chantier disproportionné pour « confortable », non demandé.
 - Requêtes nommées/favoris au-delà du simple historique — piste V2 si le besoin se confirme à l'usage.
 
 **Interactions.**
