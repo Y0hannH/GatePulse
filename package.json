@@ -17,18 +17,49 @@
   "main": "./dist/extension.js",
   "activationEvents": [],
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "gatepulse-sidebar",
+          "title": "GatePulse",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "gatepulse-sidebar": [
+        {
+          "id": "gatepulse.tenantsView",
+          "name": "Tenants",
+          "type": "tree"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "gatepulse.tenantsView",
+        "contents": "Aucun tenant configuré.\n\n[$(add) Ajouter un tenant](command:gatepulse.addTenant)\n\nUn tenant regroupe le tenantId Entra ID et le workspace Fabric où le pipeline SQL générique est provisionné automatiquement au premier run."
+      }
+    ],
     "commands": [
       {
         "command": "gatepulse.openPanel",
-        "title": "GatePulse: Open SQL Panel"
+        "title": "GatePulse: Open SQL Panel",
+        "icon": "$(play)"
+      },
+      {
+        "command": "gatepulse.openTenant",
+        "title": "GatePulse: Open Tenant"
       },
       {
         "command": "gatepulse.signOut",
-        "title": "GatePulse: Sign Out"
+        "title": "GatePulse: Sign Out",
+        "icon": "$(sign-out)"
       },
       {
         "command": "gatepulse.showLogs",
-        "title": "GatePulse: Show Logs"
+        "title": "GatePulse: Show Logs",
+        "icon": "$(output)"
       },
       {
         "command": "gatepulse.switchTenant",
@@ -36,21 +67,70 @@
       },
       {
         "command": "gatepulse.addTenant",
-        "title": "GatePulse: Add Tenant"
+        "title": "GatePulse: Add Tenant",
+        "icon": "$(add)"
       },
       {
         "command": "gatepulse.pickConnection",
-        "title": "GatePulse: Pick Connection"
+        "title": "GatePulse: Pick Connection",
+        "icon": "$(plug)"
       },
       {
         "command": "gatepulse.pickPipelineOverride",
-        "title": "GatePulse: Pick Pipeline (Override)"
+        "title": "GatePulse: Pick Pipeline (Override)",
+        "icon": "$(gear)"
       },
       {
         "command": "gatepulse.refreshConnections",
-        "title": "GatePulse: Refresh Connections"
+        "title": "GatePulse: Refresh Connections",
+        "icon": "$(refresh)"
       }
     ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "gatepulse.openTenant",
+          "when": "false"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "gatepulse.openPanel",
+          "when": "view == gatepulse.tenantsView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "gatepulse.addTenant",
+          "when": "view == gatepulse.tenantsView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "gatepulse.pickConnection",
+          "when": "view == gatepulse.tenantsView",
+          "group": "navigation@3"
+        },
+        {
+          "command": "gatepulse.refreshConnections",
+          "when": "view == gatepulse.tenantsView",
+          "group": "navigation@4"
+        },
+        {
+          "command": "gatepulse.pickPipelineOverride",
+          "when": "view == gatepulse.tenantsView",
+          "group": "9_more@1"
+        },
+        {
+          "command": "gatepulse.showLogs",
+          "when": "view == gatepulse.tenantsView",
+          "group": "9_more@2"
+        },
+        {
+          "command": "gatepulse.signOut",
+          "when": "view == gatepulse.tenantsView",
+          "group": "9_more@3"
+        }
+      ]
+    },
     "configuration": {
       "title": "GatePulse",
       "properties": {

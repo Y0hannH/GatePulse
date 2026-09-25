@@ -11,6 +11,7 @@ import { formatEntry } from '../core/logger';
 import type { Session } from '../core/session';
 import { createSession } from '../core/session';
 import { SqlPanel } from './panel';
+import { TenantTreeProvider } from './tenantTree';
 
 class OutputChannelSink implements LogSink {
   constructor(private readonly channel: vscode.OutputChannel) {}
@@ -134,16 +135,21 @@ export function activate(context: vscode.ExtensionContext): void {
     return session;
   };
 
-  /** Invalidates the cached session (tenant or settings changed) and refreshes the panel if open. */
+  const getActiveTenantAlias = (): string => getActiveTenant(context, readTenants()).alias;
+  const tenantTree = new TenantTreeProvider(readTenants, getActiveTenantAlias);
+  const tenantTreeView = vscode.window.createTreeView('gatepulse.tenantsView', {
+    treeDataProvider: tenantTree,
+  });
+
+  /** Invalidates the cached session (tenant or settings changed) and refreshes the panel/tree if open. */
   const invalidateSession = (): void => {
     session = undefined; // rebuilt lazily; tokens are in memory, so sign-in happens again
     cachedConnections = undefined;
     SqlPanel.current?.refreshDefaults();
+    tenantTree.refresh();
   };
 
-  const getActiveTenantAlias = (): string => getActiveTenant(context, readTenants()).alias;
-
-  /** Shared by the command palette entry and the panel's own tenant dropdown. */
+  /** Shared by the command palette entry, the panel's own tenant dropdown, and the sidebar tree. */
   const switchToTenant = async (alias: string): Promise<void> => {
     await context.globalState.update(ACTIVE_TENANT_KEY, alias);
     invalidateSession();
@@ -166,6 +172,7 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   context.subscriptions.push(
+    tenantTreeView,
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (!e.affectsConfiguration('gatepulse')) return;
       invalidateSession();
@@ -173,6 +180,11 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('gatepulse.openPanel', () =>
       SqlPanel.show(context, getSession, readTenants, getActiveTenantAlias, channel),
     ),
+    // Sidebar tree row click: one step from "pick a tenant" to "query it", no palette involved.
+    vscode.commands.registerCommand('gatepulse.openTenant', async (alias: string) => {
+      if (alias !== getActiveTenantAlias()) await switchToTenant(alias);
+      SqlPanel.show(context, getSession, readTenants, getActiveTenantAlias, channel);
+    }),
     vscode.commands.registerCommand('gatepulse.showLogs', () => channel.show()),
     vscode.commands.registerCommand('gatepulse.signOut', async () => {
       await getSession().auth.signOut();
