@@ -14,6 +14,7 @@ import { listColumns, listDatabases, listSchemaObjects } from '../core/runQuery'
 import type { ScenarioContext } from '../core/scenarios';
 import type { Session } from '../core/session';
 import { createSession } from '../core/session';
+import type { PanelServices } from './panel';
 import { SqlPanel } from './panel';
 import { TenantTreeProvider } from './tenantTree';
 
@@ -33,6 +34,37 @@ async function ensurePipelineResolved(session: Session): Promise<void> {
 
 function scenarioContext(session: Session): ScenarioContext {
   return { cfg: session.cfg, runner: session.runner, client: session.client, logger: session.logger };
+}
+
+/** SQL Server types the Fabric Lookup/Script data-transfer engine can't move (real error observed:
+ *  "ErrorCode=DataTypeNotSupported ... The data type ByteArray is not supported ..." on a
+ *  varbinary(max) column). `openTableQuery` excludes these from its generated SELECT rather than
+ *  emitting `*` and letting the run fail on the first binary/XML/spatial column it hits. */
+const UNSELECTABLE_COLUMN_TYPES = new Set([
+  'binary',
+  'varbinary',
+  'image',
+  'timestamp',
+  'rowversion',
+  'xml',
+  'geography',
+  'geometry',
+  'hierarchyid',
+  'sql_variant',
+  'cursor',
+  'table',
+]);
+
+const CACHE_STORAGE_KEY = 'gatepulse.schemaMetadataCache';
+
+interface PersistedSchemaCache {
+  databases: Record<string, string[]>;
+  objects: Record<string, SchemaObject[]>;
+  columns: Record<string, ColumnInfo[]>;
+}
+
+function schemaCachingEnabled(): boolean {
+  return vscode.workspace.getConfiguration('gatepulse').get<boolean>('cacheSchemaMetadata', true);
 }
 
 class OutputChannelSink implements LogSink {
@@ -159,20 +191,37 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const getActiveTenantAlias = (): string => getActiveTenant(context, readTenants()).alias;
 
-  // Schema-tree caches — separate from SqlPanel's own database cache (the tree exists even when the
-  // panel is closed) and from cachedConnections (unrelated data). Keyed so a database's schema list
-  // and a table's columns are each fetched once per session, not once per tree render.
-  const schemaCache = new Map<string, SchemaObject[]>(); // `${connectionGuid}:${databaseName}`
-  const columnsCache = new Map<string, ColumnInfo[]>(); // `${connectionGuid}:${databaseName}:${schema}:${table}`
-  const treeDatabaseCache = new Map<string, string[]>(); // `${connectionGuid}`
+  // Schema-metadata caches, shared by the panel (database picker + editor autocomplete) and the
+  // sidebar tree — whichever surface asks first fetches, the other reuses it (no reason to run the
+  // same discovery query twice). Loaded from globalState at startup so a VS Code reload doesn't
+  // throw away what was already discovered; gated by gatepulse.cacheSchemaMetadata.
+  const persisted = context.globalState.get<PersistedSchemaCache>(CACHE_STORAGE_KEY);
+  const databaseCache = new Map<string, string[]>(
+    schemaCachingEnabled() && persisted ? Object.entries(persisted.databases) : [],
+  );
+  const schemaCache = new Map<string, SchemaObject[]>(
+    schemaCachingEnabled() && persisted ? Object.entries(persisted.objects) : [],
+  );
+  const columnsCache = new Map<string, ColumnInfo[]>(
+    schemaCachingEnabled() && persisted ? Object.entries(persisted.columns) : [],
+  );
 
-  /** Invalidates the cached session (tenant or settings changed) and refreshes the panel/tree if open. */
+  const persistSchemaCaches = (): void => {
+    if (!schemaCachingEnabled()) return;
+    void context.globalState.update(CACHE_STORAGE_KEY, {
+      databases: Object.fromEntries(databaseCache),
+      objects: Object.fromEntries(schemaCache),
+      columns: Object.fromEntries(columnsCache),
+    } satisfies PersistedSchemaCache);
+  };
+
+  /** Invalidates the cached session (tenant or settings changed) and refreshes the panel/tree if
+   *  open. Deliberately does NOT touch databaseCache/schemaCache/columnsCache: those are keyed by
+   *  connectionGuid, not by tenant, so they stay valid across a tenant switch — only "GatePulse:
+   *  Refresh Schema Tree" or disabling gatepulse.cacheSchemaMetadata clears them. */
   const invalidateSession = (): void => {
     session = undefined; // rebuilt lazily; tokens are in memory, so sign-in happens again
     cachedConnections = undefined;
-    schemaCache.clear();
-    columnsCache.clear();
-    treeDatabaseCache.clear();
     SqlPanel.current?.refreshDefaults();
     tenantTree.refresh();
   };
@@ -206,17 +255,27 @@ export function activate(context: vscode.ExtensionContext): void {
     if (alias !== getActiveTenantAlias()) await switchToTenant(alias);
   };
 
-  const treeListDatabases = async (connectionGuid: string): Promise<string[]> => {
-    const cached = treeDatabaseCache.get(connectionGuid);
-    if (cached) return cached;
+  const getDatabases = async (
+    connectionGuid: string,
+    databaseNameHint: string,
+    force: boolean,
+  ): Promise<string[]> => {
+    if (!force) {
+      const cached = databaseCache.get(connectionGuid);
+      if (cached) return cached;
+    }
     const s = getSession();
     await ensurePipelineResolved(s);
-    const names = await listDatabases(scenarioContext(s), connectionGuid, '');
-    treeDatabaseCache.set(connectionGuid, names);
+    const names = await listDatabases(scenarioContext(s), connectionGuid, databaseNameHint);
+    databaseCache.set(connectionGuid, names);
+    persistSchemaCaches();
     return names;
   };
 
-  const treeListObjects = async (connectionGuid: string, databaseName: string): Promise<SchemaObject[]> => {
+  const getSchemaObjects = async (
+    connectionGuid: string,
+    databaseName: string,
+  ): Promise<SchemaObject[]> => {
     const key = `${connectionGuid}:${databaseName}`;
     const cached = schemaCache.get(key);
     if (cached) return cached;
@@ -224,10 +283,11 @@ export function activate(context: vscode.ExtensionContext): void {
     await ensurePipelineResolved(s);
     const objects = await listSchemaObjects(scenarioContext(s), connectionGuid, databaseName);
     schemaCache.set(key, objects);
+    persistSchemaCaches();
     return objects;
   };
 
-  const treeListColumns = async (
+  const getColumns = async (
     connectionGuid: string,
     databaseName: string,
     schema: string,
@@ -240,34 +300,71 @@ export function activate(context: vscode.ExtensionContext): void {
     await ensurePipelineResolved(s);
     const columns = await listColumns(scenarioContext(s), connectionGuid, databaseName, schema, table);
     columnsCache.set(key, columns);
+    persistSchemaCaches();
     return columns;
+  };
+
+  const panelServices: PanelServices = {
+    getSession,
+    getTenants: readTenants,
+    getActiveTenantAlias,
+    ensurePipelineResolved,
+    getDatabases,
+    getSchemaObjects,
+    getColumns,
   };
 
   const tenantTree = new TenantTreeProvider(
     readTenants,
     getActiveTenantAlias,
     ensureActiveTenantForTree,
-    treeListDatabases,
-    treeListObjects,
-    treeListColumns,
+    (connectionGuid) => getDatabases(connectionGuid, '', false),
+    getSchemaObjects,
+    getColumns,
   );
   const tenantTreeView = vscode.window.createTreeView('gatepulse.tenantsView', {
     treeDataProvider: tenantTree,
   });
 
+  /** Builds `SELECT TOP 100 ...` for a tree-clicked table, naming columns explicitly instead of `*`
+   *  only when at least one column has to be dropped — no point in the verbosity otherwise. Falls
+   *  back to `*` if the column list can't be fetched at all (never block the click on metadata). */
+  const buildTableQuery = async (
+    connectionGuid: string,
+    databaseName: string,
+    schema: string,
+    table: string,
+  ): Promise<string> => {
+    try {
+      const columns = await getColumns(connectionGuid, databaseName, schema, table);
+      const usable = columns.filter((c) => !UNSELECTABLE_COLUMN_TYPES.has(c.dataType.toLowerCase()));
+      if (usable.length > 0 && usable.length < columns.length) {
+        const list = usable.map((c) => `[${c.name}]`).join(', ');
+        return `SELECT TOP 100 ${list} FROM [${schema}].[${table}]`;
+      }
+    } catch {
+      // Fall through — the column-exclusion is a convenience, never a precondition to querying.
+    }
+    return `SELECT TOP 100 * FROM [${schema}].[${table}]`;
+  };
+
   context.subscriptions.push(
     tenantTreeView,
     vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('gatepulse.cacheSchemaMetadata')) {
+        if (schemaCachingEnabled()) persistSchemaCaches();
+        else void context.globalState.update(CACHE_STORAGE_KEY, undefined);
+      }
       if (!e.affectsConfiguration('gatepulse')) return;
       invalidateSession();
     }),
     vscode.commands.registerCommand('gatepulse.openPanel', () =>
-      SqlPanel.show(context, getSession, readTenants, getActiveTenantAlias, ensurePipelineResolved, channel),
+      SqlPanel.show(context, panelServices, channel),
     ),
     // Sidebar tree row click: one step from "pick a tenant" to "query it", no palette involved.
     vscode.commands.registerCommand('gatepulse.openTenant', async (alias: string) => {
       if (alias !== getActiveTenantAlias()) await switchToTenant(alias);
-      SqlPanel.show(context, getSession, readTenants, getActiveTenantAlias, ensurePipelineResolved, channel);
+      SqlPanel.show(context, panelServices, channel);
     }),
     // Sidebar tree table/view click: one step further than openTenant — also fills the panel's
     // connection/database/query so the "browse" and "query" flows meet in one click.
@@ -281,18 +378,21 @@ export function activate(context: vscode.ExtensionContext): void {
         table: string;
       }) => {
         if (args.alias !== getActiveTenantAlias()) await switchToTenant(args.alias);
-        SqlPanel.show(context, getSession, readTenants, getActiveTenantAlias, ensurePipelineResolved, channel);
-        SqlPanel.current?.prefillQuery(
+        SqlPanel.show(context, panelServices, channel);
+        const query = await buildTableQuery(
           args.connectionGuid,
           args.databaseName,
-          `SELECT TOP 100 * FROM [${args.schema}].[${args.table}]`,
+          args.schema,
+          args.table,
         );
+        SqlPanel.current?.prefillQuery(args.connectionGuid, args.databaseName, query);
       },
     ),
     vscode.commands.registerCommand('gatepulse.refreshSchemaTree', () => {
+      databaseCache.clear();
       schemaCache.clear();
       columnsCache.clear();
-      treeDatabaseCache.clear();
+      void context.globalState.update(CACHE_STORAGE_KEY, undefined);
       tenantTree.refresh();
     }),
     vscode.commands.registerCommand('gatepulse.showLogs', () => channel.show()),

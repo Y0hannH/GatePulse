@@ -5,10 +5,32 @@ import * as vscode from 'vscode';
 import type { TenantEntry } from '../core/config';
 import { checkConfig, checkTenants, isGuid } from '../core/config';
 import { serializeError } from '../core/errors';
-import { listDatabases, runSingle } from '../core/runQuery';
+import type { ColumnInfo, SchemaObject } from '../core/runQuery';
+import { runSingle } from '../core/runQuery';
 import type { ScenarioContext, ScenarioReport } from '../core/scenarios';
 import type { Session } from '../core/session';
 import { compactRun } from '../core/session';
+
+/**
+ * Everything the panel needs from extension.ts, bundled instead of threaded as positional
+ * arguments — session/auth, pipeline resolution, and the three metadata caches (databases, schema
+ * objects, columns) are all owned by extension.ts and *shared* with the sidebar tree, so the panel
+ * only ever calls through these, never touches a cache directly.
+ */
+export interface PanelServices {
+  getSession: () => Session;
+  getTenants: () => TenantEntry[];
+  getActiveTenantAlias: () => string;
+  ensurePipelineResolved: (session: Session) => Promise<void>;
+  getDatabases: (connectionGuid: string, databaseNameHint: string, force: boolean) => Promise<string[]>;
+  getSchemaObjects: (connectionGuid: string, databaseName: string) => Promise<SchemaObject[]>;
+  getColumns: (
+    connectionGuid: string,
+    databaseName: string,
+    schema: string,
+    table: string,
+  ) => Promise<ColumnInfo[]>;
+}
 
 type FromWebview =
   | { type: 'ready' }
@@ -20,6 +42,8 @@ type FromWebview =
   | { type: 'addTenant' }
   | { type: 'pickConnection' }
   | { type: 'listDatabases'; connectionGuid: string; databaseNameHint: string; force: boolean }
+  | { type: 'listTables'; connectionGuid: string; databaseName: string }
+  | { type: 'listTableColumns'; connectionGuid: string; databaseName: string; schema: string; table: string }
   | { type: 'exportCsv'; activityName: string; columns: string[]; rows: Record<string, unknown>[] };
 
 interface HistoryEntry {
@@ -38,9 +62,8 @@ const HISTORY_CAP = 50;
 export class SqlPanel {
   static current: SqlPanel | undefined;
   private controller: AbortController | undefined;
-  /** In-memory, per connection GUID — never persisted, invalidated only by the refresh button. */
-  private readonly databaseCache = new Map<string, string[]>();
-  /** Avoids piling up duplicate requests when auto-fetch and a manual refresh race each other. */
+  /** UI-level dedup only (avoid two 'databasesLoading' messages in flight) — the actual fetch and
+   *  its cache live in extension.ts, shared with the sidebar tree. */
   private readonly databasesInFlight = new Set<string>();
 
   /** Set right before a fresh panel's webview has finished loading (e.g. a schema-tree table
@@ -50,10 +73,7 @@ export class SqlPanel {
 
   static show(
     context: vscode.ExtensionContext,
-    getSession: () => Session,
-    getTenants: () => TenantEntry[],
-    getActiveTenantAlias: () => string,
-    ensurePipelineResolved: (session: Session) => Promise<void>,
+    services: PanelServices,
     channel: vscode.OutputChannel,
   ): void {
     if (SqlPanel.current) {
@@ -70,24 +90,13 @@ export class SqlPanel {
         localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')],
       },
     );
-    SqlPanel.current = new SqlPanel(
-      panel,
-      context,
-      getSession,
-      getTenants,
-      getActiveTenantAlias,
-      ensurePipelineResolved,
-      channel,
-    );
+    SqlPanel.current = new SqlPanel(panel, context, services, channel);
   }
 
   private constructor(
     private readonly panel: vscode.WebviewPanel,
     private readonly context: vscode.ExtensionContext,
-    private readonly getSession: () => Session,
-    private readonly getTenants: () => TenantEntry[],
-    private readonly getActiveTenantAlias: () => string,
-    private readonly ensurePipelineResolved: (session: Session) => Promise<void>,
+    private readonly services: PanelServices,
     private readonly channel: vscode.OutputChannel,
   ) {
     panel.webview.html = this.html();
@@ -107,13 +116,13 @@ export class SqlPanel {
 
   /** Called after a tenant switch or a settings change — same entry point either way. */
   refreshDefaults(): void {
-    const { cfg } = this.getSession();
+    const { cfg } = this.services.getSession();
     void this.post({
       type: 'init',
       defaults: { connectionGuid: cfg.connectionGuid, databaseName: cfg.databaseName },
-      configProblems: [...checkTenants(this.getTenants()), ...checkConfig(cfg)],
-      tenants: this.getTenants().map((t) => ({ alias: t.alias, tenantId: t.tenantId })),
-      activeTenantAlias: this.getActiveTenantAlias(),
+      configProblems: [...checkTenants(this.services.getTenants()), ...checkConfig(cfg)],
+      tenants: this.services.getTenants().map((t) => ({ alias: t.alias, tenantId: t.tenantId })),
+      activeTenantAlias: this.services.getActiveTenantAlias(),
       history: this.getHistory(),
     });
   }
@@ -161,6 +170,10 @@ export class SqlPanel {
         return this.exportCsv(m);
       case 'listDatabases':
         return this.handleListDatabases(m);
+      case 'listTables':
+        return this.handleListTables(m);
+      case 'listTableColumns':
+        return this.handleListTableColumns(m);
       case 'run':
         return this.execute(m);
     }
@@ -169,32 +182,56 @@ export class SqlPanel {
   private async handleListDatabases(m: Extract<FromWebview, { type: 'listDatabases' }>): Promise<void> {
     const connectionGuid = m.connectionGuid.trim();
     if (!isGuid(connectionGuid)) return; // silently ignored: the field isn't a usable GUID yet
-    if (!m.force && this.databaseCache.has(connectionGuid)) {
-      await this.post({ type: 'databases', connectionGuid, names: this.databaseCache.get(connectionGuid) });
-      return;
-    }
     if (this.databasesInFlight.has(connectionGuid)) return;
     this.databasesInFlight.add(connectionGuid);
     await this.post({ type: 'databasesLoading', connectionGuid });
-    const session = this.getSession();
     try {
-      const problems = [...checkTenants(this.getTenants()), ...checkConfig(session.cfg)];
+      const session = this.services.getSession();
+      const problems = [...checkTenants(this.services.getTenants()), ...checkConfig(session.cfg)];
       if (problems.length) throw new Error(problems.join(' • '));
-      await this.ensurePipelineResolved(session);
-      const names = await listDatabases(
-        { cfg: session.cfg, runner: session.runner, client: session.client, logger: session.logger },
-        connectionGuid,
-        m.databaseNameHint,
-      );
-      this.databaseCache.set(connectionGuid, names);
+      const names = await this.services.getDatabases(connectionGuid, m.databaseNameHint, m.force);
       await this.post({ type: 'databases', connectionGuid, names });
     } catch (err) {
       // Never blocking: the field stays a plain text input either way (V1-SCOPE.md §3's "repli").
       const error = serializeError(err);
-      session.logger.warn('panel.listDatabases.failed', `[${error.kind}] ${error.message}`);
+      this.services.getSession().logger.warn('panel.listDatabases.failed', `[${error.kind}] ${error.message}`);
       await this.post({ type: 'databases', connectionGuid, names: [], error: error.message });
     } finally {
       this.databasesInFlight.delete(connectionGuid);
+    }
+  }
+
+  /** Table list for the editor's autocomplete — shares extension.ts's cache with the sidebar tree
+   *  (V1-SCOPE.md §4, point D): whichever surface asks first fetches, the other reuses it. */
+  private async handleListTables(m: Extract<FromWebview, { type: 'listTables' }>): Promise<void> {
+    const connectionGuid = m.connectionGuid.trim();
+    const databaseName = m.databaseName.trim();
+    if (!isGuid(connectionGuid) || !databaseName) {
+      await this.post({ type: 'tables', connectionGuid, databaseName, objects: [] });
+      return;
+    }
+    try {
+      const objects = await this.services.getSchemaObjects(connectionGuid, databaseName);
+      await this.post({ type: 'tables', connectionGuid, databaseName, objects });
+    } catch (err) {
+      const error = serializeError(err);
+      this.services.getSession().logger.warn('panel.listTables.failed', `[${error.kind}] ${error.message}`);
+      await this.post({ type: 'tables', connectionGuid, databaseName, objects: [] });
+    }
+  }
+
+  private async handleListTableColumns(
+    m: Extract<FromWebview, { type: 'listTableColumns' }>,
+  ): Promise<void> {
+    const connectionGuid = m.connectionGuid.trim();
+    const databaseName = m.databaseName.trim();
+    try {
+      const columns = await this.services.getColumns(connectionGuid, databaseName, m.schema, m.table);
+      await this.post({ type: 'tableColumns', table: m.table, columns });
+    } catch (err) {
+      const error = serializeError(err);
+      this.services.getSession().logger.warn('panel.listTableColumns.failed', `[${error.kind}] ${error.message}`);
+      await this.post({ type: 'tableColumns', table: m.table, columns: [] });
     }
   }
 
@@ -218,8 +255,8 @@ export class SqlPanel {
       void vscode.window.showWarningMessage('GatePulse: an execution is already in progress.');
       return;
     }
-    const session = this.getSession();
-    const problems = [...checkTenants(this.getTenants()), ...checkConfig(session.cfg)];
+    const session = this.services.getSession();
+    const problems = [...checkTenants(this.services.getTenants()), ...checkConfig(session.cfg)];
     const conn = { connectionGuid: m.connectionGuid.trim(), databaseName: m.databaseName.trim() };
     if (!isGuid(conn.connectionGuid))
       problems.push(`connectionGuid is not a GUID: "${conn.connectionGuid}"`);
@@ -244,7 +281,7 @@ export class SqlPanel {
     const startedAt = Date.now();
     let succeeded = false;
     try {
-      await this.ensurePipelineResolved(session);
+      await this.services.ensurePipelineResolved(session);
       const report: ScenarioReport = await runSingle(ctx, { ...conn, query: m.query });
       succeeded = report.runs[0]?.succeeded ?? false;
       const file = session.saveReport(report);
@@ -262,7 +299,7 @@ export class SqlPanel {
       await this.addHistory({
         query: m.query,
         timestamp: new Date().toISOString(),
-        tenantAlias: this.getActiveTenantAlias(),
+        tenantAlias: this.services.getActiveTenantAlias(),
         connectionGuid: conn.connectionGuid,
         databaseName: conn.databaseName,
         succeeded,
@@ -286,6 +323,7 @@ export class SqlPanel {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="${media('vendor/codicons/codicon.css')}">
   <link rel="stylesheet" href="${media('vendor/codemirror/codemirror.css')}">
+  <link rel="stylesheet" href="${media('vendor/codemirror/addon/hint/show-hint.css')}">
   <link rel="stylesheet" href="${media('panel.css')}">
   <title>GatePulse SQL</title>
 </head>
@@ -368,6 +406,7 @@ export class SqlPanel {
   <script nonce="${nonce}" src="${media('vendor/codemirror/mode/sql/sql.js')}"></script>
   <script nonce="${nonce}" src="${media('vendor/codemirror/addon/edit/matchbrackets.js')}"></script>
   <script nonce="${nonce}" src="${media('vendor/codemirror/addon/edit/closebrackets.js')}"></script>
+  <script nonce="${nonce}" src="${media('vendor/codemirror/addon/hint/show-hint.js')}"></script>
   <script nonce="${nonce}" src="${media('panel.js')}"></script>
 </body>
 </html>`;

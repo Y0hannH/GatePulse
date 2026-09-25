@@ -269,6 +269,11 @@
           "default": "",
           "description": "Folder for JSONL logs and reports. Empty = extension global storage."
         },
+        "gatepulse.cacheSchemaMetadata": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep discovered databases/tables/views/columns (sidebar tree + editor autocomplete) cached across VS Code restarts, written to this machine's local extension storage. Turn off to keep the cache in memory only for the current session — nothing written to disk, cleared on reload. \"GatePulse: Refresh Schema Tree\" always forces a fresh fetch regardless of this setting."
+        },
         "gatepulse.validation.concurrency": {
           "type": "number",
           "default": 3,

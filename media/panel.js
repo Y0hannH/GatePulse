@@ -30,6 +30,7 @@
     cancelled: ['Annulé', ''],
     deduped: ['Job dédupliqué par Fabric', 'Fabric n’a pas exécuté ce job (statut Deduped).'],
     sql: ['Erreur SQL', 'La base a rejeté la requête.'],
+    unsupportedType: ['Type de colonne non supporté', 'Une colonne du SELECT a un type que le pipeline ne sait pas transférer (binaire, XML, geography, sql_variant...) — retire-la explicitement du SELECT (le nom de la colonne est dans le message ci-dessous) plutôt que d’utiliser SELECT *.'],
     resultTooLarge: ['Résultat trop volumineux (> 4 Mo)', 'Le Lookup refuse les résultats de plus de 4 Mo : réduire les colonnes (éviter SELECT *) ou ajouter TOP / WHERE.'],
     connection: ['Erreur de connexion / gateway', 'GUID de connexion, gateway, identifiants ou base inaccessibles.'],
     pipelineFailed: ['Échec du pipeline', 'Erreur non classée : voir le message brut.'],
@@ -68,11 +69,20 @@
     extraKeys: {
       'Ctrl-Enter': tryRun,
       'Cmd-Enter': tryRun,
+      'Ctrl-Space': 'autocomplete',
     },
+    hintOptions: { hint: gatepulseHint, completeSingle: false },
   });
   // The editor box is CSS-resizable (see .query-editor .CodeMirror { resize: vertical }); CodeMirror
   // doesn't notice a manual CSS resize on its own, so it needs a nudge to re-measure lines/gutter.
   new ResizeObserver(() => cm.refresh()).observe(cm.getWrapperElement());
+  // Auto-popup right after "." — Ctrl+Space above stays for anywhere-anytime completion.
+  cm.on('inputRead', (instance, change) => {
+    if (change.text[0] === '.') {
+      // eslint-disable-next-line no-undef
+      CodeMirror.showHint(instance, gatepulseHint, { completeSingle: false });
+    }
+  });
 
   const persist = () =>
     vscode.setState({
@@ -127,6 +137,104 @@
     $('databaseListOptions').replaceChildren(...names.map((n) => el('option', { value: n })));
   }
 
+  // ---------------------------------------------------------------- autocomplete
+  // Table/column names for the editor's Ctrl+Space / "." autocomplete, backed by the same
+  // extension.ts cache the sidebar tree uses (V1-SCOPE.md §4) — whichever surface asks first
+  // fetches, this just reuses it. This webview-side layer only avoids repeat postMessage chatter
+  // within one session; a single "current schema" slot is enough since only one connection/database
+  // is ever being typed against at a time (switching back re-asks the extension, which itself
+  // answers from its own persistent cache — near-free).
+  let schemaKey = '';
+  let tablesForSchema = null;
+  let tablesInFlightKey = null;
+  const pendingTablesResolvers = [];
+  const columnsBySchema = new Map(); // `${schemaKey}:${tableNameLower}` -> ColumnInfo[]
+  const pendingColumnsResolvers = new Map(); // tableNameLower -> resolve[]
+
+  function ensureTables(connectionGuid, databaseName) {
+    const key = `${connectionGuid}:${databaseName}`;
+    if (key !== schemaKey) {
+      schemaKey = key;
+      tablesForSchema = null;
+      columnsBySchema.clear();
+    }
+    if (tablesForSchema) return Promise.resolve(tablesForSchema);
+    if (!GUID_RE.test(connectionGuid) || !databaseName) return Promise.resolve([]);
+    return new Promise((resolve) => {
+      pendingTablesResolvers.push({ connectionGuid, databaseName, resolve });
+      if (tablesInFlightKey !== key) {
+        tablesInFlightKey = key;
+        vscode.postMessage({ type: 'listTables', connectionGuid, databaseName });
+      }
+    });
+  }
+
+  function ensureColumns(connectionGuid, databaseName, table) {
+    const tableKey = table.name.toLowerCase();
+    const cacheKey = `${schemaKey}:${tableKey}`;
+    const cached = columnsBySchema.get(cacheKey);
+    if (cached) return Promise.resolve(cached);
+    return new Promise((resolve) => {
+      const waiting = pendingColumnsResolvers.get(tableKey);
+      if (waiting) {
+        waiting.push(resolve);
+        return;
+      }
+      pendingColumnsResolvers.set(tableKey, [resolve]);
+      vscode.postMessage({
+        type: 'listTableColumns',
+        connectionGuid,
+        databaseName,
+        schema: table.schema,
+        table: table.name,
+      });
+    });
+  }
+
+  /** `word.partial` → columns of `word` if it's a known table; bare `partial` → table names. */
+  function wordContext(cmInst) {
+    const cur = cmInst.getCursor();
+    const line = cmInst.getLine(cur.line).slice(0, cur.ch);
+    const qualified = /([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)?$/.exec(line);
+    if (qualified) {
+      return {
+        qualifier: qualified[1],
+        partial: qualified[2] || '',
+        fromCh: cur.ch - (qualified[2] ? qualified[2].length : 0),
+      };
+    }
+    const bare = /([A-Za-z_][A-Za-z0-9_]*)$/.exec(line);
+    return { qualifier: null, partial: bare ? bare[1] : '', fromCh: cur.ch - (bare ? bare[1].length : 0) };
+  }
+
+  /** Async CodeMirror hint (show-hint addon convention: `.async = true`, resolves via `callback`). */
+  function gatepulseHint(cmInst, callback) {
+    const connectionGuid = inputs.connectionGuid.value.trim();
+    const databaseName = inputs.databaseName.value.trim();
+    const cur = cmInst.getCursor();
+    const ctx = wordContext(cmInst);
+    // eslint-disable-next-line no-undef
+    const from = CodeMirror.Pos(cur.line, ctx.fromCh);
+    const partialLower = ctx.partial.toLowerCase();
+
+    ensureTables(connectionGuid, databaseName).then((tables) => {
+      if (ctx.qualifier) {
+        const table = tables.find((t) => t.name.toLowerCase() === ctx.qualifier.toLowerCase());
+        if (!table) return callback({ list: [], from, to: cur });
+        ensureColumns(connectionGuid, databaseName, table).then((columns) => {
+          const list = columns
+            .filter((c) => c.name.toLowerCase().startsWith(partialLower))
+            .map((c) => c.name);
+          callback({ list, from, to: cur });
+        });
+        return;
+      }
+      const list = tables.map((t) => t.name).filter((n) => n.toLowerCase().startsWith(partialLower));
+      callback({ list, from, to: cur });
+    });
+  }
+  gatepulseHint.async = true;
+
   // ---------------------------------------------------------------- messages
   window.addEventListener('message', (event) => {
     const m = event.data;
@@ -165,6 +273,27 @@
         $('databaseHint').classList.toggle('hidden', !m.error);
         $('databaseHint').textContent = m.error ? 'Liste indisponible — saisie manuelle' : '';
         break;
+      case 'tables': {
+        const key = `${m.connectionGuid}:${m.databaseName}`;
+        if (key === schemaKey) tablesForSchema = m.objects;
+        tablesInFlightKey = null;
+        const remaining = [];
+        for (const p of pendingTablesResolvers) {
+          if (p.connectionGuid === m.connectionGuid && p.databaseName === m.databaseName) p.resolve(m.objects);
+          else remaining.push(p);
+        }
+        pendingTablesResolvers.length = 0;
+        pendingTablesResolvers.push(...remaining);
+        break;
+      }
+      case 'tableColumns': {
+        const tableKey = m.table.toLowerCase();
+        columnsBySchema.set(`${schemaKey}:${tableKey}`, m.columns);
+        const resolvers = pendingColumnsResolvers.get(tableKey) || [];
+        pendingColumnsResolvers.delete(tableKey);
+        resolvers.forEach((resolve) => resolve(m.columns));
+        break;
+      }
       case 'history':
         renderHistory(m.entries);
         break;
@@ -308,12 +437,17 @@
       el('div', { className: 'meta' }, `${(report.wallClockMs / 1000).toFixed(1)} s — rapport : ${reportFile}`),
       timingsBlock(r.timings),
     );
-    if (!r.succeeded && r.error) renderError(r.error);
-
     renderAlertBanner(r.checks);
+    // Diagnostics is a "everything looked fine, here's the detail" panel — on failure the red error
+    // box already says what matters, so skip it there instead of piling on next to it.
     const diagnostics = $('diagnostics');
-    diagnostics.classList.remove('hidden');
-    $('diagnosticsList').replaceChildren(...checksListItems(r.checks));
+    if (!r.succeeded && r.error) {
+      renderError(r.error);
+      diagnostics.classList.add('hidden');
+    } else {
+      diagnostics.classList.remove('hidden');
+      $('diagnosticsList').replaceChildren(...checksListItems(r.checks));
+    }
 
     $('result').replaceChildren(...r.activities.map(resultTable));
   }

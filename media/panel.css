@@ -145,6 +145,19 @@ button:disabled { opacity: 0.4; cursor: default; }
 .cm-s-gatepulse .cm-builtin, .cm-s-gatepulse .cm-atom { color: var(--vscode-charts-blue, #569cd6); }
 .cm-s-gatepulse .cm-variable, .cm-s-gatepulse .cm-variable-2, .cm-s-gatepulse .cm-operator { color: inherit; }
 
+/* Autocomplete popup (show-hint addon) — default is a fixed white box, themed to match VS Code. */
+.CodeMirror-hints {
+  background: var(--gp-card-bg);
+  border: 1px solid var(--gp-border);
+  border-radius: var(--gp-radius-sm);
+  box-shadow: none;
+  font-family: var(--vscode-editor-font-family);
+  font-size: var(--vscode-editor-font-size);
+  color: var(--vscode-editor-foreground);
+}
+.CodeMirror-hint { color: inherit; }
+li.CodeMirror-hint-active { background: var(--vscode-list-activeSelectionBackground, var(--vscode-focusBorder)); color: var(--vscode-list-activeSelectionForeground, #fff); }
+
 /* ------------------------------------------------------------------ status / progress */
 .status {
   display: flex; align-items: center; gap: 10px;
