@@ -1,42 +1,39 @@
 import { randomBytes } from 'crypto';
+import * as fs from 'fs';
 import * as vscode from 'vscode';
 
 import type { TenantEntry } from '../core/config';
 import { checkConfig, checkTenants, isGuid } from '../core/config';
 import { serializeError } from '../core/errors';
 import { ensurePipeline } from '../core/provision';
-import type { ScenarioContext, ScenarioName, ScenarioReport } from '../core/scenarios';
-import {
-  runConcurrencyTest,
-  runLatencyTest,
-  runRowCapTest,
-  runSingle,
-  runSizeTest,
-  runSwapTest,
-} from '../core/scenarios';
+import { runSingle } from '../core/runQuery';
+import type { ScenarioContext, ScenarioReport } from '../core/scenarios';
 import type { Session } from '../core/session';
 import { compactRun } from '../core/session';
 
 type FromWebview =
   | { type: 'ready' }
   | { type: 'run'; connectionGuid: string; databaseName: string; query: string }
-  | {
-      type: 'scenario';
-      name: Exclude<ScenarioName, 'single'>;
-      connectionGuid: string;
-      databaseName: string;
-    }
   | { type: 'cancel' }
   | { type: 'showLogs' }
-  | { type: 'openSettings' };
+  | { type: 'openSettings' }
+  | { type: 'switchTenant'; alias: string }
+  | { type: 'addTenant' }
+  | { type: 'pickConnection' }
+  | { type: 'exportCsv'; activityName: string; columns: string[]; rows: Record<string, unknown>[] };
 
-const SCENARIOS = {
-  latency: runLatencyTest,
-  rowcap: runRowCapTest,
-  size: runSizeTest,
-  concurrency: runConcurrencyTest,
-  swap: runSwapTest,
-};
+interface HistoryEntry {
+  query: string;
+  timestamp: string;
+  tenantAlias: string;
+  connectionGuid: string;
+  databaseName: string;
+  succeeded: boolean;
+  durationMs?: number;
+}
+
+const HISTORY_KEY = 'gatepulse.history';
+const HISTORY_CAP = 50;
 
 export class SqlPanel {
   static current: SqlPanel | undefined;
@@ -46,6 +43,7 @@ export class SqlPanel {
     context: vscode.ExtensionContext,
     getSession: () => Session,
     getTenants: () => TenantEntry[],
+    getActiveTenantAlias: () => string,
     channel: vscode.OutputChannel,
   ): void {
     if (SqlPanel.current) {
@@ -62,7 +60,14 @@ export class SqlPanel {
         localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')],
       },
     );
-    SqlPanel.current = new SqlPanel(panel, context, getSession, getTenants, channel);
+    SqlPanel.current = new SqlPanel(
+      panel,
+      context,
+      getSession,
+      getTenants,
+      getActiveTenantAlias,
+      channel,
+    );
   }
 
   private constructor(
@@ -70,6 +75,7 @@ export class SqlPanel {
     private readonly context: vscode.ExtensionContext,
     private readonly getSession: () => Session,
     private readonly getTenants: () => TenantEntry[],
+    private readonly getActiveTenantAlias: () => string,
     private readonly channel: vscode.OutputChannel,
   ) {
     panel.webview.html = this.html();
@@ -80,17 +86,32 @@ export class SqlPanel {
     panel.webview.onDidReceiveMessage((m: FromWebview) => void this.onMessage(m));
   }
 
+  /** Called after a tenant switch or a settings change — same entry point either way. */
   refreshDefaults(): void {
     const { cfg } = this.getSession();
     void this.post({
       type: 'init',
       defaults: { connectionGuid: cfg.connectionGuid, databaseName: cfg.databaseName },
       configProblems: [...checkTenants(this.getTenants()), ...checkConfig(cfg)],
+      tenants: this.getTenants().map((t) => ({ alias: t.alias, tenantId: t.tenantId })),
+      activeTenantAlias: this.getActiveTenantAlias(),
+      history: this.getHistory(),
     });
   }
 
   private post(message: unknown): Thenable<boolean> {
     return this.panel.webview.postMessage(message);
+  }
+
+  private getHistory(): HistoryEntry[] {
+    return this.context.globalState.get<HistoryEntry[]>(HISTORY_KEY, []);
+  }
+
+  /** Query text + metadata only — never the result rows (V1-SCOPE.md §4, point D.1). */
+  private async addHistory(entry: HistoryEntry): Promise<void> {
+    const next = [entry, ...this.getHistory()].slice(0, HISTORY_CAP);
+    await this.context.globalState.update(HISTORY_KEY, next);
+    void this.post({ type: 'history', entries: next });
   }
 
   private async onMessage(m: FromWebview): Promise<void> {
@@ -106,13 +127,35 @@ export class SqlPanel {
       case 'openSettings':
         await vscode.commands.executeCommand('workbench.action.openSettings', 'gatepulse');
         return;
+      case 'switchTenant':
+        return vscode.commands.executeCommand('gatepulse.switchTenant', m.alias);
+      case 'addTenant':
+        return vscode.commands.executeCommand('gatepulse.addTenant');
+      case 'pickConnection':
+        return vscode.commands.executeCommand('gatepulse.pickConnection');
+      case 'exportCsv':
+        return this.exportCsv(m);
       case 'run':
-      case 'scenario':
         return this.execute(m);
     }
   }
 
-  private async execute(m: Extract<FromWebview, { type: 'run' | 'scenario' }>): Promise<void> {
+  /** setConnectionGuid: applies a picked GUID directly to the open panel — see extension.ts's pickConnection. */
+  setConnectionGuid(value: string): void {
+    void this.post({ type: 'setConnectionGuid', value });
+  }
+
+  private async exportCsv(m: Extract<FromWebview, { type: 'exportCsv' }>): Promise<void> {
+    const uri = await vscode.window.showSaveDialog({
+      defaultUri: vscode.Uri.file(`${m.activityName || 'result'}.csv`),
+      filters: { CSV: ['csv'] },
+    });
+    if (!uri) return;
+    fs.writeFileSync(uri.fsPath, toCsv(m.columns, m.rows), 'utf8');
+    void vscode.window.showInformationMessage(`GatePulse : export écrit dans ${uri.fsPath}`);
+  }
+
+  private async execute(m: Extract<FromWebview, { type: 'run' }>): Promise<void> {
     if (this.controller) {
       void vscode.window.showWarningMessage('GatePulse: an execution is already in progress.');
       return;
@@ -122,15 +165,14 @@ export class SqlPanel {
     const conn = { connectionGuid: m.connectionGuid.trim(), databaseName: m.databaseName.trim() };
     if (!isGuid(conn.connectionGuid))
       problems.push(`connectionGuid is not a GUID: "${conn.connectionGuid}"`);
-    if (m.type === 'run' && !m.query.trim()) problems.push('query is empty');
+    if (!m.query.trim()) problems.push('query is empty');
     if (problems.length) {
       await this.post({ type: 'error', error: { kind: 'config', message: problems.join(' • ') } });
       return;
     }
 
     this.controller = new AbortController();
-    const label = m.type === 'run' ? 'single' : m.name;
-    await this.post({ type: 'busy', scenario: label });
+    await this.post({ type: 'busy' });
     this.channel.show(true);
     const ctx: ScenarioContext = {
       cfg: session.cfg,
@@ -140,6 +182,8 @@ export class SqlPanel {
       signal: this.controller.signal,
       onProgress: (e) => void this.post({ type: 'progress', event: e }),
     };
+    const startedAt = Date.now();
+    let succeeded = false;
     try {
       // Empty pipelineId = not yet resolved for this session; resolved once and cached on cfg
       // (FabricClient reads cfg.pipelineId live, so mutating it here is enough — see V1-SCOPE.md §1).
@@ -156,24 +200,29 @@ export class SqlPanel {
           );
         }
       }
-      const report: ScenarioReport =
-        m.type === 'run'
-          ? await runSingle(ctx, { ...conn, query: m.query })
-          : await SCENARIOS[m.name](ctx, conn);
+      const report: ScenarioReport = await runSingle(ctx, { ...conn, query: m.query });
+      succeeded = report.runs[0]?.succeeded ?? false;
       const file = session.saveReport(report);
-      // Single runs show whole activity results (<= 5000 rows each); scenario tables are only evidence.
-      const forUi = {
-        ...report,
-        runs: report.runs.map((r) => compactRun(r, m.type === 'run' ? 5000 : 20)),
-      };
+      // Whole activity results shown (<= 5000 rows each, capped for the JSONL report only).
+      const forUi = { ...report, runs: report.runs.map((r) => compactRun(r, 5000)) };
       await this.post({ type: 'report', report: forUi, reportFile: file });
     } catch (err) {
+      succeeded = false;
       const error = serializeError(err);
       session.logger.error('panel.failed', `[${error.kind}] ${error.message}`, error.raw);
       await this.post({ type: 'error', error });
     } finally {
       this.controller = undefined;
       await this.post({ type: 'idle' });
+      await this.addHistory({
+        query: m.query,
+        timestamp: new Date().toISOString(),
+        tenantAlias: this.getActiveTenantAlias(),
+        connectionGuid: conn.connectionGuid,
+        databaseName: conn.databaseName,
+        succeeded,
+        durationMs: Date.now() - startedAt,
+      });
     }
   }
 
@@ -193,13 +242,24 @@ export class SqlPanel {
 </head>
 <body>
   <header>
-    <h1>GatePulse <span class="sub">SQL via Fabric Gateway — démo</span></h1>
+    <h1>GatePulse <span class="sub">SQL via Fabric Gateway</span></h1>
     <div class="links"><a href="#" id="openSettings">Paramètres</a> · <a href="#" id="showLogs">Logs</a></div>
   </header>
+  <div class="tenant-bar">
+    <label class="tenant-label">Tenant
+      <select id="tenantSelect"></select>
+    </label>
+    <button id="addTenant" class="secondary" title="Ajouter un tenant">+ Tenant</button>
+  </div>
   <div id="configProblems" class="banner hidden"></div>
 
   <section class="params">
-    <label>Connection GUID<input id="connectionGuid" spellcheck="false" placeholder="00000000-0000-0000-0000-000000000000"></label>
+    <label>Connection GUID
+      <div class="with-button">
+        <input id="connectionGuid" spellcheck="false" placeholder="00000000-0000-0000-0000-000000000000">
+        <button id="pickConnection" class="secondary" title="Choisir une connexion gateway">Parcourir…</button>
+      </div>
+    </label>
     <label>Base de données<input id="databaseName" spellcheck="false"></label>
   </section>
 
@@ -208,13 +268,6 @@ export class SqlPanel {
     <div class="actions">
       <button id="run" class="primary">▶ Run <kbd>Ctrl+Enter</kbd></button>
       <button id="cancel" class="secondary" disabled>■ Annuler</button>
-      <span class="spacer"></span>
-      <span class="label">Tests de validation :</span>
-      <button class="secondary scenario" data-scenario="latency" title="P2 — runs séquentiels, stats de latence">P2 Latence</button>
-      <button class="secondary scenario" data-scenario="rowcap" title="P1 — comportement du plafond de lignes">P1 Plafond</button>
-      <button class="secondary scenario" data-scenario="size" title="P1 — limite de taille (4 Mo)">P1 Taille</button>
-      <button class="secondary scenario" data-scenario="concurrency" title="P3 — runs parallèles, isolation">P3 Concurrence</button>
-      <button class="secondary scenario" data-scenario="swap" title="P4 — swap de connexion + GUID bidon">P4 Swap connexion</button>
     </div>
   </section>
 
@@ -222,15 +275,36 @@ export class SqlPanel {
     <span class="spinner"></span>
     <span id="elapsed" class="elapsed">0.0 s</span>
     <span id="statusText"></span>
-    <div id="runs" class="runs"></div>
   </section>
 
+  <section id="alertBanner" class="alert-banner hidden"></section>
   <section id="error" class="error hidden"></section>
   <section id="summary" class="hidden"></section>
   <section id="result"></section>
+  <details id="diagnostics" class="diagnostics hidden">
+    <summary>Diagnostics</summary>
+    <ul id="diagnosticsList" class="checks"></ul>
+  </details>
+
+  <details id="history" class="history hidden">
+    <summary>Historique</summary>
+    <ul id="historyList"></ul>
+  </details>
 
   <script nonce="${nonce}" src="${media('panel.js')}"></script>
 </body>
 </html>`;
   }
+}
+
+function csvCell(v: unknown): string {
+  if (v === null || v === undefined) return '';
+  const s = typeof v === 'object' ? JSON.stringify(v) : String(v);
+  return /["\n,]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function toCsv(columns: string[], rows: Record<string, unknown>[]): string {
+  const lines = [columns.map(csvCell).join(',')];
+  for (const row of rows) lines.push(columns.map((c) => csvCell(row[c])).join(','));
+  return lines.join('\r\n');
 }

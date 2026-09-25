@@ -17,8 +17,15 @@ a { color: var(--vscode-textLink-foreground); }
   border: 1px solid var(--vscode-inputValidation-warningBorder);
 }
 
+.tenant-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.tenant-label { display: flex; align-items: center; gap: 6px; font-size: 0.9em; opacity: 0.9; }
+.tenant-label select { font-family: inherit; font-size: inherit; color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground)); background: var(--vscode-dropdown-background, var(--vscode-input-background)); border: 1px solid var(--vscode-dropdown-border, var(--vscode-input-border, transparent)); padding: 4px 6px; min-width: 180px; }
+.tenant-empty { display: flex; align-items: center; gap: 8px; font-size: 0.9em; opacity: 0.9; }
+
 .params { display: grid; grid-template-columns: 2fr 1fr; gap: 10px; margin-bottom: 10px; }
 label { display: flex; flex-direction: column; gap: 4px; font-size: 0.9em; opacity: 0.9; }
+.with-button { display: flex; gap: 6px; }
+.with-button input { flex: 1; }
 input, textarea {
   font-family: var(--vscode-editor-font-family);
   font-size: var(--vscode-editor-font-size);
@@ -87,4 +94,19 @@ details.run-detail summary { cursor: pointer; }
 pre.query { white-space: pre-wrap; opacity: 0.8; margin: 6px 0; }
 
 .activity { margin: 12px 0; }
-.activity-title { font-size: 1em; margin: 6px 0; }
+.activity-title { font-size: 1em; margin: 6px 0; display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.activity-title .spacer { flex: 1; }
+.activity-title button.export { padding: 2px 8px; font-size: 0.85em; }
+
+.alert-banner { padding: 8px 10px; margin-bottom: 10px; border-radius: 3px; background: var(--vscode-inputValidation-warningBackground); border: 1px solid var(--vscode-inputValidation-warningBorder); }
+.alert-banner ul { list-style: none; margin: 0; padding: 0; }
+.alert-banner li { padding: 2px 0; }
+.alert-banner li.FAIL { color: var(--vscode-errorForeground); }
+
+details.diagnostics, details.history { margin-top: 12px; }
+details.diagnostics summary, details.history summary { cursor: pointer; opacity: 0.85; font-size: 0.9em; }
+.history ul { list-style: none; padding: 0; margin: 6px 0; font-size: 0.9em; }
+.history li { padding: 4px 2px; cursor: pointer; border-bottom: 1px solid var(--vscode-panel-border); }
+.history li:hover { background: var(--vscode-list-hoverBackground); }
+.history li .failed-marker { color: var(--vscode-errorForeground); }
+.history li .meta { opacity: 0.7; margin-left: 6px; }

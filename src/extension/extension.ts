@@ -141,6 +141,14 @@ export function activate(context: vscode.ExtensionContext): void {
     SqlPanel.current?.refreshDefaults();
   };
 
+  const getActiveTenantAlias = (): string => getActiveTenant(context, readTenants()).alias;
+
+  /** Shared by the command palette entry and the panel's own tenant dropdown. */
+  const switchToTenant = async (alias: string): Promise<void> => {
+    await context.globalState.update(ACTIVE_TENANT_KEY, alias);
+    invalidateSession();
+  };
+
   /** Never throws: a listing failure degrades to "no connections found", never blocks manual entry. */
   const getConnections = async (): Promise<FabricConnection[]> => {
     if (cachedConnections) return cachedConnections;
@@ -163,7 +171,7 @@ export function activate(context: vscode.ExtensionContext): void {
       invalidateSession();
     }),
     vscode.commands.registerCommand('gatepulse.openPanel', () =>
-      SqlPanel.show(context, getSession, readTenants, channel),
+      SqlPanel.show(context, getSession, readTenants, getActiveTenantAlias, channel),
     ),
     vscode.commands.registerCommand('gatepulse.showLogs', () => channel.show()),
     vscode.commands.registerCommand('gatepulse.signOut', async () => {
@@ -172,7 +180,13 @@ export function activate(context: vscode.ExtensionContext): void {
         'GatePulse : session effacée, la prochaine exécution redemandera la connexion.',
       );
     }),
-    vscode.commands.registerCommand('gatepulse.switchTenant', async () => {
+    // alias: passed directly by the panel's own tenant dropdown; omitted from the command palette,
+    // which falls back to a QuickPick (V1-SCOPE.md §4.C).
+    vscode.commands.registerCommand('gatepulse.switchTenant', async (alias?: string) => {
+      if (alias) {
+        await switchToTenant(alias);
+        return;
+      }
       const tenants = readTenants();
       if (tenants.length === 0) {
         void vscode.window.showWarningMessage(
@@ -185,8 +199,7 @@ export function activate(context: vscode.ExtensionContext): void {
         { placeHolder: 'GatePulse : choisir le tenant actif' },
       );
       if (!picked) return;
-      await context.globalState.update(ACTIVE_TENANT_KEY, picked.tenant.alias);
-      invalidateSession();
+      await switchToTenant(picked.tenant.alias);
     }),
     vscode.commands.registerCommand('gatepulse.addTenant', async () => {
       const alias = (await vscode.window.showInputBox({
@@ -240,6 +253,9 @@ export function activate(context: vscode.ExtensionContext): void {
         { placeHolder: 'GatePulse : choisir une connexion gateway (GUID copié dans le presse-papiers)' },
       );
       if (!picked) return;
+      // Fills the panel field directly when it's the source of the request; clipboard copy stays
+      // useful for the command-palette entry point, where no panel field is in reach.
+      SqlPanel.current?.setConnectionGuid(picked.connection.id);
       await vscode.env.clipboard.writeText(picked.connection.id);
       const choice = await vscode.window.showInformationMessage(
         `GatePulse : GUID de "${picked.connection.displayName}" copié dans le presse-papiers.`,

@@ -112,18 +112,6 @@ export function describe(values: number[]) {
   };
 }
 
-// ------------------------------------------------------------------ single run
-
-export function runSingle(ctx: ScenarioContext, params: QueryParams): Promise<ScenarioReport> {
-  return scenario('single', ctx, async () => [
-    await ctx.runner.execute(params, {
-      signal: ctx.signal,
-      onProgress: ctx.onProgress,
-      runLabel: `single-${randomUUID().slice(0, 6)}`,
-    }),
-  ]);
-}
-
 // ------------------------------------------------------------------ P2: latency
 
 export function runLatencyTest(

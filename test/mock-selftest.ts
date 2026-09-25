@@ -12,8 +12,9 @@ import { mergeConfig } from '../src/core/config';
 import { FabricClient } from '../src/core/fabricClient';
 import { ConsoleSink, Logger } from '../src/core/logger';
 import { PipelineRunner } from '../src/core/pipelineRunner';
+import { runSingle } from '../src/core/runQuery';
 import type { ScenarioContext } from '../src/core/scenarios';
-import { runConcurrencyTest, runRowCapTest, runSingle, runSwapTest } from '../src/core/scenarios';
+import { runConcurrencyTest, runRowCapTest, runSwapTest } from '../src/core/scenarios';
 
 const CONN_A = '11111111-1111-1111-1111-111111111111';
 const CONN_B = '22222222-2222-2222-2222-222222222222';

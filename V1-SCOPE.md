@@ -413,17 +413,26 @@ l'implémentation, pas un doute de conception.
    point 3 = mécanisme/commandes, point 4 = widget dans le panel). Dégradation en saisie libre
    testée (liste vide → message informatif, pas de blocage). Couverture offline ajoutée dans
    `test/provision-selftest.ts` (mock `/v1/connections`).
-5. ~~Spécifier l'UX v1 du panel~~ — fait, cf. section 4 ci-dessus. Reste à implémenter : retrait des
-   boutons/rendus P1-P4 du webview, bandeau d'alerte + section Diagnostics repliée, sélecteur de
-   tenant + picker de connexion dans le panel, bandeau de provisioning, historique de requêtes
-   (`globalState`, cap 50), export CSV.
+5. ~~Spécifier l'UX v1 du panel~~ — fait, cf. section 4 ci-dessus. **Implémenté (2026-09-25)** :
+   `runSingle` extrait vers `src/core/runQuery.ts` (le panel ne dépend plus de `scenarios.ts`,
+   gelé) ; retrait des boutons/rendus P1-P4 du webview (`media/panel.js` réécrit) ; bandeau
+   d'alerte reformulé (SILENT_FAILURE/ROW_CAP/PARAM_BINDING/CONNECTION_RESOLUTION/DATABASE_BINDING
+   en WARN/FAIL) + section Diagnostics repliée par défaut avec tous les checks ; sélecteur de
+   tenant dans le panel (`<select>` + bouton « + Tenant », câblés sur les commandes
+   `gatepulse.switchTenant`/`addTenant` déjà existantes) ; bouton « Parcourir… » sur le champ
+   connexion, qui appelle `gatepulse.pickConnection` et remplit directement le champ du panel
+   (`SqlPanel.setConnectionGuid`, jusque-là jamais câblé) ; historique de requêtes dans
+   `globalState` (cap 50, ré-exécutable en un clic, jamais le contenu du résultat) ; export CSV par
+   activité via `showSaveDialog`. Le bandeau de provisioning (point 1) reste une notification VS
+   Code explicite au premier run sur un tenant, pas un composant dédié dans le panel — suffisant vu
+   sa fréquence (une fois par tenant).
 6. ~~`git init` local (sans remote)~~ — fait, `git log` : 3 commits (repo initial, point 1, point 2).
-7. **Implémenté (2026-09-24) : points 1, 2 et 3** — typecheck/lint/compile/test verts à chaque
+7. **Implémenté (2026-09-24/25) : points 1 à 4** — typecheck/lint/compile/test verts à chaque
    étape, committés séparément, avec une suite de tests offline dédiée
-   (`test/provision-selftest.ts`, mock Fabric Items + Connections API, 26 assertions). `runSingle`
-   n'a pas encore été extrait de `scenarios.ts` (cf. correction plus haut) — à faire au moment du
-   point 4, pas bloquant avant. **Non encore vérifié à la main** : le panel VS Code (webview,
-   sign-in réel, run contre un vrai tenant Fabric) — aucun outil ne permet de le simuler depuis ce
-   poste de travail ; seule la logique métier est couverte par les tests offline. Reste à
-   implémenter : point 4 (UX du panel, y compris le retrait des boutons P1-P4 et l'extraction de
-   `runSingle`).
+   (`test/provision-selftest.ts`, mock Fabric Items + Connections API, 26 assertions) — le point 4
+   n'ajoute pas de logique `src/core` nouvelle testable offline (webview + wiring de commandes déjà
+   couvertes), donc aucune nouvelle assertion associée. **Non encore vérifié à la main** : le panel
+   VS Code (webview, sign-in réel, run contre un vrai tenant Fabric) — aucun outil ne permet de le
+   simuler depuis ce poste de travail ; seule la logique métier est couverte par les tests offline.
+   Les quatre points du cadrage V1 sont maintenant implémentés ; la vérification manuelle contre un
+   vrai tenant Fabric reste le prochain jalon avant de considérer la V1 utilisable en pratique.

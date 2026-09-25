@@ -10,6 +10,7 @@ import { serializeError } from '../core/errors';
 import type { ValidationCheck, ValidationPoint } from '../core/logger';
 import { ConsoleSink } from '../core/logger';
 import { inspectPipeline, provisionPipeline } from '../core/provision';
+import { runSingle } from '../core/runQuery';
 import type { ScenarioContext, ScenarioReport } from '../core/scenarios';
 import {
   aggregateVerdicts,
@@ -17,7 +18,6 @@ import {
   runConcurrencyTest,
   runLatencyTest,
   runRowCapTest,
-  runSingle,
   runSizeTest,
   runSwapTest,
 } from '../core/scenarios';
