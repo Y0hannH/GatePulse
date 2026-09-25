@@ -224,7 +224,7 @@
 
   // ---------------------------------------------------------------- status
   function setBusy(busy) {
-    document.querySelectorAll('.actions button, .toolbar button, .tenant-bar button, header button')
+    document.querySelectorAll('header button, .card-toolbar button, .connection-card button')
       .forEach((b) => (b.disabled = b.id === 'cancel' ? !busy : busy));
     $('status').classList.remove('hidden');
     $('status').classList.toggle('busy', busy);

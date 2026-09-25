@@ -225,7 +225,8 @@ export class SqlPanel {
 
     this.controller = new AbortController();
     await this.post({ type: 'busy' });
-    this.channel.show(true);
+    // Logs stay opt-in: the "Logs" button in the header calls channel.show() on demand — a run
+    // should never yank focus/layout by popping the Output panel open on its own.
     const ctx: ScenarioContext = {
       cfg: session.cfg,
       runner: session.runner,
@@ -283,28 +284,32 @@ export class SqlPanel {
   <title>GatePulse SQL</title>
 </head>
 <body>
-  <header>
-    <h1>GatePulse <span class="sub">SQL via un pipeline Fabric</span></h1>
-    <div class="links">
-      <a href="#" id="openSettings"><i class="codicon codicon-gear"></i> Paramètres</a>
-      <a href="#" id="showLogs"><i class="codicon codicon-output"></i> Logs</a>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-title">GatePulse</span>
+      <span class="brand-sub">SQL via un pipeline Fabric</span>
+    </div>
+
+    <div class="tenant-switcher">
+      <i class="codicon codicon-organization"></i>
+      <select id="tenantSelect"></select>
+      <button id="addTenant" class="icon-btn ghost" title="Ajouter un tenant"><i class="codicon codicon-add"></i></button>
+    </div>
+
+    <div class="topbar-actions">
+      <button id="showLogs" class="icon-btn ghost" title="Afficher les logs GatePulse"><i class="codicon codicon-output"></i></button>
+      <button id="openSettings" class="icon-btn ghost" title="Paramètres GatePulse"><i class="codicon codicon-gear"></i></button>
     </div>
   </header>
 
-  <div class="tenant-bar">
-    <label class="tenant-label">Tenant
-      <select id="tenantSelect"></select>
-    </label>
-    <button id="addTenant" class="icon-btn" title="Ajouter un tenant"><i class="codicon codicon-add"></i></button>
-  </div>
   <div id="configProblems" class="banner hidden"></div>
 
-  <section class="toolbar">
+  <section class="card connection-card">
     <div class="field grow">
       <label for="connectionGuid">Connexion SQL</label>
       <div class="with-button">
         <input id="connectionGuid" spellcheck="false" placeholder="00000000-0000-0000-0000-000000000000">
-        <button id="pickConnection" class="icon-btn" title="Choisir une connexion SQL (gateway ou cloud)"><i class="codicon codicon-plug"></i></button>
+        <button id="pickConnection" class="icon-btn secondary" title="Choisir une connexion SQL (gateway ou cloud)"><i class="codicon codicon-plug"></i></button>
       </div>
     </div>
     <div class="field">
@@ -312,18 +317,20 @@ export class SqlPanel {
       <div class="with-button">
         <input id="databaseName" list="databaseListOptions" spellcheck="false" placeholder="master">
         <datalist id="databaseListOptions"></datalist>
-        <button id="refreshDatabases" class="icon-btn" title="Rafraîchir la liste des bases"><i class="codicon codicon-refresh"></i></button>
+        <button id="refreshDatabases" class="icon-btn secondary" title="Rafraîchir la liste des bases"><i class="codicon codicon-refresh"></i></button>
       </div>
       <div id="databaseHint" class="field-hint hidden"></div>
     </div>
   </section>
 
-  <section class="editor-section">
-    <div id="queryEditor" class="query-editor"></div>
-    <div class="actions">
-      <button id="run" class="primary"><i class="codicon codicon-play"></i> Run <kbd>Ctrl+Enter</kbd></button>
+  <section class="card editor-card">
+    <div class="card-toolbar">
+      <span class="card-title"><i class="codicon codicon-code"></i> Requête SQL</span>
+      <span class="spacer"></span>
       <button id="cancel" class="secondary" disabled><i class="codicon codicon-debug-stop"></i> Annuler</button>
+      <button id="run" class="primary"><i class="codicon codicon-play"></i> Run <kbd>Ctrl+Enter</kbd></button>
     </div>
+    <div id="queryEditor" class="query-editor"></div>
   </section>
 
   <section id="status" class="status hidden">
@@ -335,13 +342,18 @@ export class SqlPanel {
   <section id="alertBanner" class="alert-banner hidden"></section>
   <section id="error" class="error hidden"></section>
   <section id="summary" class="hidden"></section>
-  <section id="result"></section>
-  <details id="diagnostics" class="diagnostics hidden">
+  <section id="result">
+    <div id="resultEmpty" class="empty-state">
+      <i class="codicon codicon-database"></i>
+      <p>Les résultats de ta requête s'afficheront ici.</p>
+    </div>
+  </section>
+  <details id="diagnostics" class="card diagnostics hidden">
     <summary>Diagnostics</summary>
     <ul id="diagnosticsList" class="checks"></ul>
   </details>
 
-  <details id="history" class="history hidden">
+  <details id="history" class="card history hidden">
     <summary>Historique</summary>
     <ul id="historyList"></ul>
   </details>
