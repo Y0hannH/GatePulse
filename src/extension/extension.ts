@@ -214,32 +214,43 @@ export function activate(context: vscode.ExtensionContext): void {
       await switchToTenant(picked.tenant.alias);
     }),
     vscode.commands.registerCommand('gatepulse.addTenant', async () => {
-      const alias = (await vscode.window.showInputBox({
-        prompt: 'GatePulse : nom du tenant (alias)',
-        placeHolder: 'Client A - Prod',
-      }))?.trim();
-      if (!alias) return;
       const existing = readTenants();
-      if (existing.some((t) => t.alias.toLowerCase() === alias.toLowerCase())) {
-        void vscode.window.showErrorMessage(`GatePulse : l'alias "${alias}" existe déjà.`);
-        return;
-      }
-      const tenantId = (await vscode.window.showInputBox({
-        prompt: 'GatePulse : tenant ID (GUID Entra ID)',
-      }))?.trim();
+      // ignoreFocusOut: renseigner un tenantId/workspaceId implique presque toujours d'aller le
+      // copier ailleurs (portail Azure, Fabric) — sans ça, la boîte se fermait dès qu'on changeait
+      // de fenêtre et il fallait tout recommencer depuis l'alias.
+      const alias = (
+        await vscode.window.showInputBox({
+          prompt: 'GatePulse : nom du tenant (alias)',
+          placeHolder: 'Client A - Prod',
+          ignoreFocusOut: true,
+          validateInput: (v) => {
+            const trimmed = v.trim();
+            if (!trimmed) return 'Alias requis';
+            if (existing.some((t) => t.alias.toLowerCase() === trimmed.toLowerCase()))
+              return `L'alias "${trimmed}" existe déjà`;
+            return null;
+          },
+        })
+      )?.trim();
+      if (!alias) return;
+      const tenantId = (
+        await vscode.window.showInputBox({
+          prompt: 'GatePulse : tenant ID (GUID Entra ID)',
+          placeHolder: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
+          ignoreFocusOut: true,
+          validateInput: (v) => (isGuid(v.trim()) ? null : 'GUID attendu'),
+        })
+      )?.trim();
       if (!tenantId) return;
-      if (!isGuid(tenantId)) {
-        void vscode.window.showErrorMessage('GatePulse : tenantId invalide (GUID attendu).');
-        return;
-      }
-      const workspaceId = (await vscode.window.showInputBox({
-        prompt: 'GatePulse : workspace ID (GUID Fabric)',
-      }))?.trim();
+      const workspaceId = (
+        await vscode.window.showInputBox({
+          prompt: 'GatePulse : workspace ID (GUID Fabric)',
+          placeHolder: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
+          ignoreFocusOut: true,
+          validateInput: (v) => (isGuid(v.trim()) ? null : 'GUID attendu'),
+        })
+      )?.trim();
       if (!workspaceId) return;
-      if (!isGuid(workspaceId)) {
-        void vscode.window.showErrorMessage('GatePulse : workspaceId invalide (GUID attendu).');
-        return;
-      }
       // Global, jamais Workspace : GatePulse s'utilise sans dossier ouvert (V1-SCOPE.md §2).
       await vscode.workspace
         .getConfiguration('gatepulse')
