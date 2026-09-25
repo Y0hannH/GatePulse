@@ -3,10 +3,12 @@
   // eslint-disable-next-line no-undef
   const vscode = acquireVsCodeApi();
   const $ = (id) => /** @type {HTMLElement} */ (document.getElementById(id));
+  const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const DEFAULT_QUERY = 'SELECT TOP 10 name, create_date FROM sys.tables ORDER BY create_date DESC';
+
   const inputs = {
     connectionGuid: /** @type {HTMLInputElement} */ ($('connectionGuid')),
     databaseName: /** @type {HTMLInputElement} */ ($('databaseName')),
-    query: /** @type {HTMLTextAreaElement} */ ($('query')),
   };
   const tenantSelect = /** @type {HTMLSelectElement} */ ($('tenantSelect'));
 
@@ -50,34 +52,80 @@
 
   // ---------------------------------------------------------------- state
   const saved = vscode.getState() || {};
-  for (const k of Object.keys(inputs)) if (saved[k]) inputs[k].value = saved[k];
+  if (saved.connectionGuid) inputs.connectionGuid.value = saved.connectionGuid;
+  if (saved.databaseName) inputs.databaseName.value = saved.databaseName;
+
+  // eslint-disable-next-line no-undef
+  const cm = CodeMirror($('queryEditor'), {
+    value: saved.query || DEFAULT_QUERY,
+    mode: 'text/x-mssql',
+    theme: 'gatepulse',
+    lineNumbers: true,
+    matchBrackets: true,
+    autoCloseBrackets: true,
+    indentUnit: 2,
+    tabSize: 2,
+    extraKeys: {
+      'Ctrl-Enter': tryRun,
+      'Cmd-Enter': tryRun,
+    },
+  });
+  // The editor box is CSS-resizable (see .query-editor .CodeMirror { resize: vertical }); CodeMirror
+  // doesn't notice a manual CSS resize on its own, so it needs a nudge to re-measure lines/gutter.
+  new ResizeObserver(() => cm.refresh()).observe(cm.getWrapperElement());
+
   const persist = () =>
     vscode.setState({
       connectionGuid: inputs.connectionGuid.value,
       databaseName: inputs.databaseName.value,
-      query: inputs.query.value,
+      query: cm.getValue(),
     });
-  Object.values(inputs).forEach((el) => el.addEventListener('input', persist));
+  inputs.connectionGuid.addEventListener('input', persist);
+  inputs.databaseName.addEventListener('input', persist);
+  cm.on('change', persist);
 
   let timer = 0;
   let startedAt = 0;
 
   // ---------------------------------------------------------------- actions
   const conn = () => ({ connectionGuid: inputs.connectionGuid.value, databaseName: inputs.databaseName.value });
-  const run = () => vscode.postMessage({ type: 'run', ...conn(), query: inputs.query.value });
+  function tryRun() {
+    if (!(/** @type {HTMLButtonElement} */ ($('run')).disabled)) run();
+  }
+  const run = () => vscode.postMessage({ type: 'run', ...conn(), query: cm.getValue() });
   $('run').addEventListener('click', run);
-  inputs.query.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-      e.preventDefault();
-      if (!(/** @type {HTMLButtonElement} */ ($('run')).disabled)) run();
-    }
-  });
   $('cancel').addEventListener('click', () => vscode.postMessage({ type: 'cancel' }));
   $('pickConnection').addEventListener('click', () => vscode.postMessage({ type: 'pickConnection' }));
   $('showLogs').addEventListener('click', (e) => (e.preventDefault(), vscode.postMessage({ type: 'showLogs' })));
   $('openSettings').addEventListener('click', (e) => (e.preventDefault(), vscode.postMessage({ type: 'openSettings' })));
   tenantSelect.addEventListener('change', () => vscode.postMessage({ type: 'switchTenant', alias: tenantSelect.value }));
   $('addTenant').addEventListener('click', () => vscode.postMessage({ type: 'addTenant' }));
+
+  // ---------------------------------------------------------------- database picker
+  // Fired on blur/commit (not every keystroke) so a half-typed GUID never triggers a run.
+  inputs.connectionGuid.addEventListener('change', () => requestDatabases(false));
+  $('refreshDatabases').addEventListener('click', () => requestDatabases(true));
+
+  function requestDatabases(force) {
+    const guid = inputs.connectionGuid.value.trim();
+    if (!GUID_RE.test(guid)) return;
+    setDatabasesLoading(true);
+    vscode.postMessage({
+      type: 'listDatabases',
+      connectionGuid: guid,
+      databaseNameHint: inputs.databaseName.value,
+      force: !!force,
+    });
+  }
+
+  function setDatabasesLoading(loading) {
+    $('refreshDatabases').classList.toggle('spinning', loading);
+    /** @type {HTMLButtonElement} */ ($('refreshDatabases')).disabled = loading;
+  }
+
+  function renderDatabaseOptions(names) {
+    $('databaseListOptions').replaceChildren(...names.map((n) => el('option', { value: n })));
+  }
 
   // ---------------------------------------------------------------- messages
   window.addEventListener('message', (event) => {
@@ -92,11 +140,23 @@
         banner.classList.toggle('hidden', problems.length === 0);
         banner.textContent = problems.length ? `Configuration incomplète : ${problems.join(' • ')}` : '';
         renderHistory(m.history || []);
+        requestDatabases(false); // uses the panel-side cache if this connection was already resolved this session
         break;
       }
       case 'setConnectionGuid':
         inputs.connectionGuid.value = m.value;
         persist();
+        requestDatabases(false);
+        break;
+      case 'databasesLoading':
+        if (m.connectionGuid === inputs.connectionGuid.value.trim()) setDatabasesLoading(true);
+        break;
+      case 'databases':
+        if (m.connectionGuid !== inputs.connectionGuid.value.trim()) break; // stale: field changed meanwhile
+        setDatabasesLoading(false);
+        renderDatabaseOptions(m.names);
+        $('databaseHint').classList.toggle('hidden', !m.error);
+        $('databaseHint').textContent = m.error ? 'Liste indisponible — saisie manuelle' : '';
         break;
       case 'history':
         renderHistory(m.entries);
@@ -143,8 +203,9 @@
             onclick: () => {
               inputs.connectionGuid.value = h.connectionGuid;
               inputs.databaseName.value = h.databaseName;
-              inputs.query.value = h.query;
+              cm.setValue(h.query);
               persist();
+              requestDatabases(false);
               run();
             },
           },
@@ -163,7 +224,8 @@
 
   // ---------------------------------------------------------------- status
   function setBusy(busy) {
-    document.querySelectorAll('button').forEach((b) => (b.disabled = b.id === 'cancel' ? !busy : busy));
+    document.querySelectorAll('.actions button, .toolbar button, .tenant-bar button, header button')
+      .forEach((b) => (b.disabled = b.id === 'cancel' ? !busy : busy));
     $('status').classList.remove('hidden');
     $('status').classList.toggle('busy', busy);
     if (busy) {
@@ -274,11 +336,13 @@
     );
   }
 
-  /** One block per query activity (Lookup / Script): header + export button, error if any, then its rows. */
+  /** One block per query activity (Lookup / Script): header + export button, error if any, then its
+   *  sortable/filterable table. */
   function resultTable(activity) {
     const ok = activity.succeeded;
-    const shown = activity.rows.length;
-    const total = activity.rowsTruncatedInReport || shown;
+    const built = activity.columns.length ? buildDataTable(activity.columns, activity.rows) : null;
+    const total = activity.rowsTruncatedInReport || activity.rows.length;
+
     const header = el(
       'h3',
       { className: 'activity-title' },
@@ -287,23 +351,26 @@
       el(
         'span',
         { className: 'meta' },
-        `<${activity.activityType}> — ${total} ligne(s)${total !== shown ? ` (${shown} affichées)` : ''} — ${activity.columns.length} colonne(s)${activity.durationInMs !== undefined ? ` — ${(activity.durationInMs / 1000).toFixed(2)} s` : ''}`,
+        `<${activity.activityType}>${activity.durationInMs !== undefined ? ` — ${(activity.durationInMs / 1000).toFixed(2)} s` : ''} — ${activity.columns.length} colonne(s) — `,
       ),
+      built ? built.countEl : el('span', { className: 'meta' }, `${total} ligne(s)`),
       el('span', { className: 'spacer' }),
-      activity.columns.length
+      built
         ? el(
             'button',
             {
               className: 'secondary export',
+              title: 'Exporter les lignes actuellement affichées (filtre/tri appliqués)',
               onclick: () =>
                 vscode.postMessage({
                   type: 'exportCsv',
                   activityName: activity.activityName,
                   columns: activity.columns,
-                  rows: activity.rows,
+                  rows: built.getVisibleRows(),
                 }),
             },
-            'Exporter CSV',
+            icon('save'),
+            ' Exporter CSV',
           )
         : '',
     );
@@ -312,21 +379,115 @@
       const [title] = ERROR_TITLES[activity.errorKind] || ERROR_TITLES.unexpected;
       block.append(el('div', { className: 'error-message' }, `${title} : ${activity.error.message}`));
     }
-    if (activity.columns.length) {
-      const table = el(
-        'table',
-        {},
-        el('thead', {}, el('tr', {}, ...activity.columns.map((c) => el('th', {}, c)))),
-        el('tbody', {}, ...activity.rows.map((row) => el('tr', {}, ...activity.columns.map((c) => cell(row[c]))))),
-      );
-      block.append(el('div', { className: 'table-wrap' }, table));
-    }
+    if (built) block.append(built.wrap);
     return block;
+  }
+
+  /**
+   * A `<table>` with clickable sortable headers (none → asc → desc → none, one column at a time)
+   * and a per-column text filter row right under the header — both live-updated client-side, no
+   * round trip to the extension (rows are already in the webview). `countEl` reflects the current
+   * visible/total count live; `getVisibleRows()` returns exactly what's on screen right now, so
+   * "Exporter CSV" exports what the user actually filtered/sorted down to.
+   */
+  function buildDataTable(columns, allRows) {
+    const state = { sortCol: null, sortDir: 1, filters: Object.fromEntries(columns.map((c) => [c, ''])) };
+    let debounceTimer = 0;
+
+    const headerCells = [];
+    const headerRow = el('tr', {});
+    const filterRow = el('tr', { className: 'filter-row' });
+    const tbody = el('tbody', {});
+    const countEl = el('span', { className: 'meta row-count' });
+
+    function compute() {
+      let out = allRows;
+      const activeFilters = columns.filter((c) => state.filters[c]);
+      if (activeFilters.length) {
+        out = out.filter((row) => activeFilters.every((c) => cellText(row[c]).toLowerCase().includes(state.filters[c])));
+      }
+      if (state.sortCol) {
+        const { sortCol, sortDir } = state;
+        out = [...out].sort((a, b) => compareValues(a[sortCol], b[sortCol]) * sortDir);
+      }
+      return out;
+    }
+
+    function render() {
+      const visible = compute();
+      tbody.replaceChildren(...visible.map((row) => el('tr', {}, ...columns.map((c) => cell(row[c])))));
+      countEl.textContent =
+        visible.length === allRows.length ? `${allRows.length} ligne(s)` : `${visible.length} / ${allRows.length} ligne(s)`;
+    }
+
+    function updateSortIndicators() {
+      headerCells.forEach((th, i) => {
+        const arrow = /** @type {HTMLElement} */ (th.querySelector('.sort-arrow'));
+        arrow.textContent = state.sortCol === columns[i] ? (state.sortDir === 1 ? '▲' : '▼') : '';
+        th.classList.toggle('sorted', state.sortCol === columns[i]);
+      });
+    }
+
+    columns.forEach((c) => {
+      const th = el(
+        'th',
+        { className: 'sortable' },
+        el('span', { className: 'th-label' }, c),
+        el('span', { className: 'sort-arrow' }, ''),
+      );
+      th.addEventListener('click', () => {
+        if (state.sortCol !== c) {
+          state.sortCol = c;
+          state.sortDir = 1;
+        } else if (state.sortDir === 1) {
+          state.sortDir = -1;
+        } else {
+          state.sortCol = null;
+          state.sortDir = 1;
+        }
+        updateSortIndicators();
+        render();
+      });
+      headerCells.push(th);
+      headerRow.append(th);
+
+      const filterInput = el('input', { type: 'text', placeholder: 'filtrer…', className: 'col-filter', spellcheck: false });
+      filterInput.addEventListener('input', () => {
+        state.filters[c] = filterInput.value.trim().toLowerCase();
+        window.clearTimeout(debounceTimer);
+        debounceTimer = window.setTimeout(render, 120);
+      });
+      filterRow.append(el('th', {}, filterInput));
+    });
+
+    render();
+
+    const table = el('table', {}, el('thead', {}, headerRow, filterRow), tbody);
+    return { wrap: el('div', { className: 'table-wrap' }, table), countEl, getVisibleRows: compute };
+  }
+
+  /** Numeric-aware, null-last comparison so sorting numbers/dates-as-strings behaves sanely. */
+  function compareValues(a, b) {
+    if (a === null || a === undefined) return b === null || b === undefined ? 0 : 1;
+    if (b === null || b === undefined) return -1;
+    if (typeof a === 'number' && typeof b === 'number') return a - b;
+    const [na, nb] = [Number(a), Number(b)];
+    if (a !== '' && b !== '' && !Number.isNaN(na) && !Number.isNaN(nb)) return na - nb;
+    return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+  }
+
+  function cellText(v) {
+    if (v === null || v === undefined) return '';
+    return typeof v === 'object' ? JSON.stringify(v) : String(v);
   }
 
   function cell(v) {
     if (v === null || v === undefined) return el('td', { className: 'null' }, 'NULL');
-    return el('td', {}, typeof v === 'object' ? JSON.stringify(v) : String(v));
+    return el('td', {}, cellText(v));
+  }
+
+  function icon(name) {
+    return el('i', { className: `codicon codicon-${name}` });
   }
 
   /** Minimal DOM builder; text is always inserted as text nodes (no innerHTML). */

@@ -6,7 +6,7 @@ import type { TenantEntry } from '../core/config';
 import { checkConfig, checkTenants, isGuid } from '../core/config';
 import { serializeError } from '../core/errors';
 import { ensurePipeline } from '../core/provision';
-import { runSingle } from '../core/runQuery';
+import { listDatabases, runSingle } from '../core/runQuery';
 import type { ScenarioContext, ScenarioReport } from '../core/scenarios';
 import type { Session } from '../core/session';
 import { compactRun } from '../core/session';
@@ -20,6 +20,7 @@ type FromWebview =
   | { type: 'switchTenant'; alias: string }
   | { type: 'addTenant' }
   | { type: 'pickConnection' }
+  | { type: 'listDatabases'; connectionGuid: string; databaseNameHint: string; force: boolean }
   | { type: 'exportCsv'; activityName: string; columns: string[]; rows: Record<string, unknown>[] };
 
 interface HistoryEntry {
@@ -38,6 +39,10 @@ const HISTORY_CAP = 50;
 export class SqlPanel {
   static current: SqlPanel | undefined;
   private controller: AbortController | undefined;
+  /** In-memory, per connection GUID — never persisted, invalidated only by the refresh button. */
+  private readonly databaseCache = new Map<string, string[]>();
+  /** Avoids piling up duplicate requests when auto-fetch and a manual refresh race each other. */
+  private readonly databasesInFlight = new Set<string>();
 
   static show(
     context: vscode.ExtensionContext,
@@ -135,8 +140,55 @@ export class SqlPanel {
         return vscode.commands.executeCommand('gatepulse.pickConnection');
       case 'exportCsv':
         return this.exportCsv(m);
+      case 'listDatabases':
+        return this.handleListDatabases(m);
       case 'run':
         return this.execute(m);
+    }
+  }
+
+  /** Resolves and caches the pipeline id on `session.cfg` — shared by a query run and a database
+   *  listing, since both need a working pipeline before they can execute anything (V1-SCOPE.md §1). */
+  private async ensurePipelineResolved(session: Session): Promise<void> {
+    if (session.cfg.pipelineId) return;
+    const resolved = await ensurePipeline(session.client, session.logger, session.cfg.parameterNames);
+    session.cfg.pipelineId = resolved.id;
+    if (resolved.created) {
+      void vscode.window.showInformationMessage(
+        `GatePulse : pipeline "${resolved.displayName}" provisionné automatiquement dans ce workspace.`,
+      );
+    }
+  }
+
+  private async handleListDatabases(m: Extract<FromWebview, { type: 'listDatabases' }>): Promise<void> {
+    const connectionGuid = m.connectionGuid.trim();
+    if (!isGuid(connectionGuid)) return; // silently ignored: the field isn't a usable GUID yet
+    if (!m.force && this.databaseCache.has(connectionGuid)) {
+      await this.post({ type: 'databases', connectionGuid, names: this.databaseCache.get(connectionGuid) });
+      return;
+    }
+    if (this.databasesInFlight.has(connectionGuid)) return;
+    this.databasesInFlight.add(connectionGuid);
+    await this.post({ type: 'databasesLoading', connectionGuid });
+    const session = this.getSession();
+    try {
+      const problems = [...checkTenants(this.getTenants()), ...checkConfig(session.cfg)];
+      if (problems.length) throw new Error(problems.join(' • '));
+      await this.ensurePipelineResolved(session);
+      const names = await listDatabases(
+        { cfg: session.cfg, runner: session.runner, client: session.client, logger: session.logger },
+        connectionGuid,
+        m.databaseNameHint,
+      );
+      this.databaseCache.set(connectionGuid, names);
+      await this.post({ type: 'databases', connectionGuid, names });
+    } catch (err) {
+      // Never blocking: the field stays a plain text input either way (V1-SCOPE.md §3's "repli").
+      const error = serializeError(err);
+      session.logger.warn('panel.listDatabases.failed', `[${error.kind}] ${error.message}`);
+      await this.post({ type: 'databases', connectionGuid, names: [], error: error.message });
+    } finally {
+      this.databasesInFlight.delete(connectionGuid);
     }
   }
 
@@ -185,21 +237,7 @@ export class SqlPanel {
     const startedAt = Date.now();
     let succeeded = false;
     try {
-      // Empty pipelineId = not yet resolved for this session; resolved once and cached on cfg
-      // (FabricClient reads cfg.pipelineId live, so mutating it here is enough — see V1-SCOPE.md §1).
-      if (!session.cfg.pipelineId) {
-        const resolved = await ensurePipeline(
-          session.client,
-          session.logger,
-          session.cfg.parameterNames,
-        );
-        session.cfg.pipelineId = resolved.id;
-        if (resolved.created) {
-          void vscode.window.showInformationMessage(
-            `GatePulse : pipeline "${resolved.displayName}" provisionné automatiquement dans ce workspace.`,
-          );
-        }
-      }
+      await this.ensurePipelineResolved(session);
       const report: ScenarioReport = await runSingle(ctx, { ...conn, query: m.query });
       succeeded = report.runs[0]?.succeeded ?? false;
       const file = session.saveReport(report);
@@ -231,43 +269,60 @@ export class SqlPanel {
     const media = (file: string) =>
       webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', file));
     const nonce = randomBytes(16).toString('base64');
+    // CSP allows only nonce'd scripts and the webview's own resource origin for styles — every
+    // vendored file below is served from media/ (covered by SqlPanel.show's localResourceRoots).
     return `<!DOCTYPE html>
 <html lang="fr">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}'; font-src ${webview.cspSource};">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="${media('vendor/codicons/codicon.css')}">
+  <link rel="stylesheet" href="${media('vendor/codemirror/codemirror.css')}">
   <link rel="stylesheet" href="${media('panel.css')}">
   <title>GatePulse SQL</title>
 </head>
 <body>
   <header>
     <h1>GatePulse <span class="sub">SQL via un pipeline Fabric</span></h1>
-    <div class="links"><a href="#" id="openSettings">Paramètres</a> · <a href="#" id="showLogs">Logs</a></div>
+    <div class="links">
+      <a href="#" id="openSettings"><i class="codicon codicon-gear"></i> Paramètres</a>
+      <a href="#" id="showLogs"><i class="codicon codicon-output"></i> Logs</a>
+    </div>
   </header>
+
   <div class="tenant-bar">
     <label class="tenant-label">Tenant
       <select id="tenantSelect"></select>
     </label>
-    <button id="addTenant" class="secondary" title="Ajouter un tenant">+ Tenant</button>
+    <button id="addTenant" class="icon-btn" title="Ajouter un tenant"><i class="codicon codicon-add"></i></button>
   </div>
   <div id="configProblems" class="banner hidden"></div>
 
-  <section class="params">
-    <label>Connection GUID
+  <section class="toolbar">
+    <div class="field grow">
+      <label for="connectionGuid">Connexion SQL</label>
       <div class="with-button">
         <input id="connectionGuid" spellcheck="false" placeholder="00000000-0000-0000-0000-000000000000">
-        <button id="pickConnection" class="secondary" title="Choisir une connexion SQL (gateway ou cloud)">Parcourir…</button>
+        <button id="pickConnection" class="icon-btn" title="Choisir une connexion SQL (gateway ou cloud)"><i class="codicon codicon-plug"></i></button>
       </div>
-    </label>
-    <label>Base de données<input id="databaseName" spellcheck="false"></label>
+    </div>
+    <div class="field">
+      <label for="databaseName">Base de données</label>
+      <div class="with-button">
+        <input id="databaseName" list="databaseListOptions" spellcheck="false" placeholder="master">
+        <datalist id="databaseListOptions"></datalist>
+        <button id="refreshDatabases" class="icon-btn" title="Rafraîchir la liste des bases"><i class="codicon codicon-refresh"></i></button>
+      </div>
+      <div id="databaseHint" class="field-hint hidden"></div>
+    </div>
   </section>
 
-  <section>
-    <textarea id="query" spellcheck="false" placeholder="SELECT TOP 10 * FROM sys.tables">SELECT TOP 10 name, create_date FROM sys.tables ORDER BY create_date DESC</textarea>
+  <section class="editor-section">
+    <div id="queryEditor" class="query-editor"></div>
     <div class="actions">
-      <button id="run" class="primary">▶ Run <kbd>Ctrl+Enter</kbd></button>
-      <button id="cancel" class="secondary" disabled>■ Annuler</button>
+      <button id="run" class="primary"><i class="codicon codicon-play"></i> Run <kbd>Ctrl+Enter</kbd></button>
+      <button id="cancel" class="secondary" disabled><i class="codicon codicon-debug-stop"></i> Annuler</button>
     </div>
   </section>
 
@@ -291,6 +346,10 @@ export class SqlPanel {
     <ul id="historyList"></ul>
   </details>
 
+  <script nonce="${nonce}" src="${media('vendor/codemirror/codemirror.js')}"></script>
+  <script nonce="${nonce}" src="${media('vendor/codemirror/mode/sql/sql.js')}"></script>
+  <script nonce="${nonce}" src="${media('vendor/codemirror/addon/edit/matchbrackets.js')}"></script>
+  <script nonce="${nonce}" src="${media('vendor/codemirror/addon/edit/closebrackets.js')}"></script>
   <script nonce="${nonce}" src="${media('panel.js')}"></script>
 </body>
 </html>`;
