@@ -410,6 +410,47 @@ priorité d'affichage change.
      cf. `runQuery.ts::listDatabases`), mis en cache en mémoire par `connectionGuid`
      (`SqlPanel.databaseCache`, jamais persisté), bouton de rafraîchissement manuel, et la saisie
      libre reste toujours possible (repli si la liste échoue ou si l'utilisateur préfère taper).
+5. **Implémenté le 2026-09-25 : arbre de schéma dans la sidebar** (`tenantTree.ts`), demande
+   explicite de Yohann — « découvrir la liste de toutes les tables/schéma/vues », en arborescence,
+   « comme les bases » (mis en cache, rafraîchissable). Chaque tenant se déplie en
+   Bases → Schémas → Tables/Vues → Colonnes, chaque niveau chargé (et caché) seulement quand son
+   parent est déplié — jamais tout chargé d'un coup.
+   - **Requêtes de découverte** (`runQuery.ts`) : `listSchemaObjects` (`INFORMATION_SCHEMA.TABLES`,
+     un aller-retour donne tables *et* vues via `TABLE_TYPE`) et `listColumns`
+     (`INFORMATION_SCHEMA.COLUMNS`, un aller-retour par table, jamais toutes les tables d'un coup).
+     ANSI SQL standard, pas du T-SQL spécifique comme `sys.databases` — mais **non vérifié contre un
+     vrai Fabric-gateway SQL Server**, même réserve que les autres requêtes de découverte de ce
+     document.
+   - **Connexion utilisée pour parcourir un tenant : son `connectionGuid` par défaut**
+     (`gatepulse.tenants[].connectionGuid`, point 2). Pas de sélecteur de connexion dans l'arbre —
+     si le tenant n'en a pas, la racine du tenant se déplie sur un message cliquable qui lance
+     directement `GatePulse: Pick Connection`. Un tenant avec plusieurs connexions à parcourir n'a
+     qu'une seule vue possible à la fois (celle enregistrée par défaut) : limitation assumée, pas
+     conçue pour le multi-connexion par tenant dans l'arbre.
+   - **Déplier le nœud d'un tenant rend ce tenant actif** s'il ne l'était pas déjà
+     (`ensureActiveTenantForTree`, réutilise `switchToTenant`) — cohérent avec le modèle « un seul
+     tenant actif à la fois » déjà en place (point 2) plutôt que d'introduire une notion de session
+     multi-tenant juste pour l'arbre.
+   - **Cliquer une table/vue ouvre le panel, requête prête** : `SELECT TOP 100 * FROM
+     [schema].[table]` pré-rempli avec la bonne connexion/base (`SqlPanel.prefillQuery`,
+     commande interne `gatepulse.openTableQuery`). Pas demandé explicitement mais découle
+     naturellement de « parcourir puis requêter » — extension jugée à faible risque, cohérente avec
+     le clic sur une ligne de tenant qui fait déjà bascule + ouverture.
+   - **Cache et rafraîchissement séparés de celui du panel** (`SqlPanel.databaseCache`) : l'arbre
+     existe même panel fermé. Trois `Map` dans `extension.ts` (bases par connexion, objets par
+     `connexion:base`, colonnes par `connexion:base:schéma:table`), vidées par le nouveau bouton
+     `GatePulse: Refresh Schema Tree` dans la barre de titre de la vue (remplace
+     `refreshConnections`, mal placé là — cette dernière commande reste utilisable via la palette,
+     juste retirée de la barre de titre de l'arbre où elle ne concernait pas ce que l'arbre affiche)
+     et par tout changement de config (`invalidateSession`, même règle que les autres caches).
+   - **`ensurePipelineResolved` déplacé** de `panel.ts` (méthode privée) vers `extension.ts`
+     (fonction de module, injectée dans `SqlPanel` et utilisée directement par les callbacks de
+     l'arbre) — trois consommateurs maintenant (run, liste des bases, arbre de schéma), plus
+     raisonnable en fonction partagée qu'en méthode privée dupliquée.
+6. **Historique : voir sans exécuter (2026-09-25), demande explicite de Yohann.** Cliquer une entrée
+   d'historique ne lance plus la requête — elle est seulement chargée dans l'éditeur pour relecture/
+   modification. Un bouton ▶ inline par entrée garde le comportement « charger et exécuter en un
+   clic » pour qui le veut toujours.
 
 **E. Explicitement hors périmètre de ce point** (pour ne pas dériver) :
 - Multi-requêtes / multi-onglets simultanés — un seul éditeur de requête, comme aujourd'hui.
