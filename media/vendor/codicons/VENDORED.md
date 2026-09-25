@@ -1,0 +1,5 @@
+Vendored from npm `@vscode/codicons@0.0.46-24` (Microsoft, CC-BY-4.0 — attribution: "Codicons by Microsoft", https://github.com/microsoft/vscode-codicons). Used so the panel webview's icon buttons (connection picker, database refresh, run/cancel...) match the icon set VS Code's own command/menu contributions already use elsewhere in this extension (`$(plug)`, `$(refresh)`, ...) — same font, `<i class="codicon codicon-plug">`-style markup instead of `$(name)` syntax, which only works in native VS Code UI, not inside a webview.
+
+Files kept: `codicon.css`, `codicon.ttf`. The `@font-face` in `codicon.css` references `./codicon.ttf` by a relative URL, which resolves fine as long as both files stay siblings under `media/` (covered by the panel's `localResourceRoots`).
+
+To upgrade: `npm install --no-save @vscode/codicons@<version>`, copy `dist/codicon.css` and `dist/codicon.ttf` over these, `npm uninstall @vscode/codicons`. Check the icon names used in `panel.ts`/`panel.js` (search for `codicon-`) still exist in the new version.
