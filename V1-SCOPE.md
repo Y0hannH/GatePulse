@@ -472,12 +472,24 @@ priorité d'affichage change.
      seuls le bouton refresh et la désactivation du réglage les vident maintenant.
 8. **Autocomplétion SQL (2026-09-25), demande explicite de Yohann** — retire la ligne « chantier
    disproportionné, non demandé » de la section E ci-dessous, ex-point non retenu à la conception
-   initiale du point 4. Ctrl+Space (et auto-déclenchement après un `.`) dans l'éditeur : noms de
-   table/vue en saisie libre, colonnes après `table.`. CodeMirror 5 addon `show-hint` vendoré (voir
-   `VENDORED.md`) avec une fonction de hint entièrement custom côté `panel.js` (pas `sql-hint.js`,
-   trop générique — pas conscient du schéma) ; async, `postMessage`/réponse vers les mêmes
-   `getSchemaObjects`/`getColumns` du point 7. Cache côté webview à un seul niveau (« schéma
-   courant ») : suffisant, le vrai cache anti-refetch est déjà côté extension (point 7).
+   initiale du point 4. Ctrl+Space (et auto-déclenchement après un `.`) dans l'éditeur : schémas +
+   tables/vues en saisie libre, membres d'un schéma après `schema.`, colonnes après `table.`.
+   CodeMirror 5 addon `show-hint` vendoré (voir `VENDORED.md`) avec une fonction de hint entièrement
+   custom côté `panel.js` (pas `sql-hint.js`, trop générique — pas conscient du schéma) ; async,
+   `postMessage`/réponse vers les mêmes `getSchemaObjects`/`getColumns` du point 7. Cache côté
+   webview à un seul niveau (« schéma courant ») : suffisant, le vrai cache anti-refetch est déjà
+   côté extension (point 7).
+   - **Correction du 2026-09-25 (retour à l'usage — deux fois le même symptôme).** L'auto-
+     déclenchement après `.` ne semblait « pas s'activer », et le clic sur une table dans l'arbre
+     « mettait du temps à arriver » : même cause. `ensureTables`/`ensureColumns` ne partaient qu'au
+     moment de l'interaction — une vraie requête Fabric (plusieurs secondes), pas un lookup local.
+     Le temps qu'elle réponde, le curseur avait bougé et CodeMirror abandonne silencieusement une
+     complétion devenue obsolète. Ajout de `warmTables()` : la liste des tables est demandée dès que
+     connexion + base sont renseignées (mêmes déclencheurs que `requestDatabases`), bien avant que
+     l'utilisateur commence à taper — plus de fenêtre de latence perceptible pour le cas courant.
+   - **Schémas/tables/vues/colonnes différenciés visuellement** (demande explicite) : chaque entrée
+     de la liste a maintenant une icône (mêmes codicons que l'arbre — `symbol-namespace`/`table`/
+     `eye`/`symbol-field`) via `render` custom du show-hint, plutôt qu'une liste plate de noms.
 9. **Colonnes non transférables (2026-09-25), incident réel de Yohann** : `ThumbNailPhoto`
    (`varbinary(max)`) a fait échouer un `SELECT *` avec `ErrorCode=DataTypeNotSupported` — le moteur
    de transfert du Lookup/Script ne sait pas déplacer certains types (binaire, XML, geography,
@@ -485,15 +497,31 @@ priorité d'affichage change.
    - Nouveau `ErrorKind: 'unsupportedType'` (`errors.ts`), détecté par un motif regex distinct de
      `SqlException` (c'est une `HybridDeliveryException`, pas une erreur SQL) — message et piste
      d'action dédiés dans le panel au lieu de tomber dans `pipelineFailed` générique.
-   - `gatepulse.openTableQuery` (clic sur une table/vue dans l'arbre) génère maintenant une liste de
-     colonnes explicite plutôt que `*` **si et seulement si** au moins une colonne du type exclu
-     (`UNSELECTABLE_COLUMN_TYPES`, `extension.ts`) est présente — sinon `SELECT TOP 100 *` reste tel
-     quel, pas de verbosité inutile. Ne couvre que les requêtes générées depuis l'arbre ; une requête
-     tapée à la main avec `SELECT *` peut toujours heurter ce mur, message d'erreur clair à défaut.
+   - Génère une liste de colonnes explicite plutôt que `*` **si et seulement si** au moins une
+     colonne du type exclu (`UNSELECTABLE_COLUMN_TYPES`, `extension.ts`) est présente — sinon
+     `SELECT TOP 100 *` reste tel quel, pas de verbosité inutile. Ne couvre que les requêtes
+     générées depuis l'arbre (point 12 ci-dessous) ; une requête tapée à la main avec `SELECT *`
+     peut toujours heurter ce mur, message d'erreur clair à défaut.
 10. **Diagnostics masqué en cas d'échec (2026-09-25), demande explicite de Yohann.** La section
     Diagnostics (tous les checks, y compris PASS/INFO) ne s'affiche plus quand le run a échoué — le
     bandeau d'erreur rouge dit déjà l'essentiel, Diagnostics n'ajoutait que du bruit à côté. Reste
     affiché comme avant sur un run réussi (c'est là qu'il sert : confirmer que tout est net).
+11. **Éditeur vide par défaut (2026-09-25), demande explicite de Yohann.** L'exemple `SELECT TOP 10
+    name, create_date FROM sys.tables...` pré-rempli à l'ouverture du panel (hérité du PoC) a
+    disparu — page blanche tant qu'aucune requête (ou historique, ou action de l'arbre) n'a rien
+    posé dans l'éditeur.
+12. **Clic sur une table = expand seulement ; « Select Top 100 » passe en clic droit (2026-09-25),
+    demande explicite de Yohann.** Le clic simple sur une table/vue de l'arbre (point 5) ouvrait le
+    panel et **écrasait** la requête en cours d'écriture — signalé comme perturbant, d'autant que la
+    génération de la requête (point 9) implique un aller-retour Fabric pas instantané. Retiré :
+    `TableTreeItem` n'a plus de `command`, un clic ne fait plus qu'ouvrir/fermer les colonnes,
+    comme les autres niveaux de l'arbre. La génération de requête devient une entrée de menu
+    contextuel dédiée, **`GatePulse: Select Top 100 Rows`** (`gatepulse.selectTop100`,
+    `view/item/context`, tables et vues uniquement) — explicite, jamais un effet de bord du
+    parcours. Toujours en deux temps pour éviter l'attente : `SELECT TOP 100 *` posé immédiatement
+    à l'ouverture du panel, puis remplacé silencieusement par la version à colonnes explicites
+    (point 9) dès que la vérification des types revient — l'utilisateur voit tout de suite quelque
+    chose plutôt que d'attendre l'aller-retour avant tout affichage.
 
 **E. Explicitement hors périmètre de ce point** (pour ne pas dériver) :
 - Multi-requêtes / multi-onglets simultanés — un seul éditeur de requête, comme aujourd'hui.
