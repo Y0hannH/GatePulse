@@ -1,7 +1,11 @@
 Vendored from npm `codemirror@5.65.21` (MIT license), used as-is for the SQL editor in the panel
 webview — plain `<script>`/`<link>` includes, not an npm runtime dependency (the webview has no
 bundler/module resolution). Files kept: `lib/codemirror.js`, `lib/codemirror.css`,
-`mode/sql/sql.js`, `addon/edit/matchbrackets.js`, `addon/edit/closebrackets.js`.
+`mode/sql/sql.js`, `addon/edit/matchbrackets.js`, `addon/edit/closebrackets.js`,
+`addon/hint/show-hint.js`, `addon/hint/show-hint.css`. Not `addon/hint/sql-hint.js` — GatePulse's
+autocomplete is schema-aware (table/column names discovered via the panel's own metadata cache,
+V1-SCOPE.md §4), so `panel.js` implements its own hint function against `show-hint`'s
+`CodeMirror.showHint()` API instead of the generic keyword-only `sql-hint`.
 
 CodeMirror 5 (not 6) on purpose: CM6 ships as many small ES modules meant to be bundled, which
 would need its own build step for the webview; CM5 is a single self-contained file designed for
