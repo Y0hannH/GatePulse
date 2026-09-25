@@ -387,11 +387,29 @@ priorité d'affichage change.
    duplication de données potentiellement volumineuses ou sensibles dans le state de l'extension).
 2. **Export CSV du résultat affiché.** Bouton sur chaque table de résultat, écrit via
    `vscode.window.showSaveDialog` (action explicite de l'utilisateur, jamais d'écriture silencieuse
-   sur disque). Le tri/filtre de colonnes ou la copie de cellule sont un confort secondaire, pas
-   requis pour la V1 — à ajouter plus tard si le besoin se confirme à l'usage.
+   sur disque). Exporte les lignes **actuellement visibles** (après tri/filtre, point 4 ci-dessous),
+   pas le jeu de données brut.
 3. **Persistance de saisie** (déjà là via `vscode.getState()`/`setState()` sur
    `connectionGuid`/`databaseName`/`query`) : étendre au tenant actif sélectionné, toujours côté
    état de webview, pas réglages.
+4. **Implémenté le 2026-09-25** (le tri/filtre de colonnes, noté ci-dessus comme "pas requis pour
+   la V1", s'est confirmé à l'usage — demande explicite de Yohann) :
+   - **Résultats triables et filtrables par colonne.** Client-side uniquement, `media/panel.js` —
+     en-tête cliquable (cycle aucun → asc → desc → aucun, une seule colonne à la fois) plus une
+     ligne de filtres texte sous l'en-tête (un champ par colonne, substring insensible à la casse,
+     debounce 120 ms). Aucun aller-retour vers l'extension : les lignes sont déjà dans la webview
+     (`<= 5000 par activité`, cf. `compactRun`). Tri numérique-aware (`compareValues`), `NULL` en
+     dernier quel que soit le sens.
+   - **Éditeur SQL modernisé.** Le `<textarea>` est remplacé par CodeMirror 5 (vendoré, voir
+     GatePulse/CLAUDE.md) — coloration syntaxique T-SQL (`text/x-mssql`), numéros de ligne,
+     correspondance de parenthèses, fermeture auto des parenthèses/guillemets, thème
+     `cm-s-gatepulse` calé sur les variables CSS VS Code (donc cohérent clair/sombre
+     automatiquement, pas un thème CodeMirror figé).
+   - **Liste des bases par connexion.** Nouveau champ base de données avec `<datalist>` : rempli
+     automatiquement (une requête `SELECT name FROM sys.databases WHERE state = 0` via le pipeline,
+     cf. `runQuery.ts::listDatabases`), mis en cache en mémoire par `connectionGuid`
+     (`SqlPanel.databaseCache`, jamais persisté), bouton de rafraîchissement manuel, et la saisie
+     libre reste toujours possible (repli si la liste échoue ou si l'utilisateur préfère taper).
 
 **E. Explicitement hors périmètre de ce point** (pour ne pas dériver) :
 - Multi-requêtes / multi-onglets simultanés — un seul éditeur de requête, comme aujourd'hui.
@@ -447,10 +465,18 @@ l'implémentation, pas un doute de conception.
 6. ~~`git init` local (sans remote)~~ — fait, `git log` : 3 commits (repo initial, point 1, point 2).
 7. **Implémenté (2026-09-24/25) : points 1 à 4** — typecheck/lint/compile/test verts à chaque
    étape, committés séparément, avec une suite de tests offline dédiée
-   (`test/provision-selftest.ts`, mock Fabric Items + Connections API, 26 assertions) — le point 4
-   n'ajoute pas de logique `src/core` nouvelle testable offline (webview + wiring de commandes déjà
-   couvertes), donc aucune nouvelle assertion associée. **Non encore vérifié à la main** : le panel
-   VS Code (webview, sign-in réel, run contre un vrai tenant Fabric) — aucun outil ne permet de le
-   simuler depuis ce poste de travail ; seule la logique métier est couverte par les tests offline.
-   Les quatre points du cadrage V1 sont maintenant implémentés ; la vérification manuelle contre un
-   vrai tenant Fabric reste le prochain jalon avant de considérer la V1 utilisable en pratique.
+   (`test/provision-selftest.ts`, mock Fabric Items + Connections API, 26 assertions). **Trou de
+   couverture assumé, pas comblé le 2026-09-25** : `runQuery.ts::listDatabases` (parsing/dédup/tri
+   des noms de bases) n'a pas de test offline dédié — le mock HTTP existant
+   (`test/mock-selftest.ts`) simule des jobs pipeline shape-fixe (colonnes `server_name`/
+   `database_name`), pas un jeu de lignes `sys.databases` arbitraire ; l'étendre pour ça a semblé
+   disproportionné vu que le chemin d'exécution sous-jacent (`ctx.runner.execute`) est déjà
+   largement couvert par les autres tests. Un bug ici se verrait immédiatement à l'usage (liste de
+   bases vide/fausse dans le panel), contrairement aux subtilités P4 qui, elles, justifiaient des
+   tests dédiés. **Non encore vérifié à la main** : le panel VS Code (webview, sign-in réel, run
+   contre un vrai tenant Fabric) — aucun outil ne permet de le simuler depuis ce poste de travail ;
+   seule la logique métier est couverte par les tests offline. Les quatre points du cadrage V1 sont
+   maintenant implémentés (le point 4 continue d'évoluer, cf. §4.D.4 : tri/filtre des résultats,
+   éditeur CodeMirror, liste des bases par connexion, ajoutés le 2026-09-25) ; la vérification
+   manuelle contre un vrai tenant Fabric reste le prochain jalon avant de considérer la V1
+   utilisable en pratique.

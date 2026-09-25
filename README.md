@@ -84,11 +84,25 @@ Sorties :
 ## 4. Extension VS Code
 
 1. Ouvrir ce dossier dans VS Code, puis **F5** (« Run GatePulse extension »).
-2. Dans la fenêtre Extension Development Host, renseigner les settings `gatepulse.*` (`tenantId`, `workspaceId`, `pipelineId`, `connectionGuid`, `databaseName`).
-3. Palette de commandes : **GatePulse: Open SQL Panel**.
-4. Taper la requête, puis **Run** (ou Ctrl+Entrée). Pendant l'exécution, le panneau affiche un spinner, le temps écoulé en direct, la phase, le statut du job et le nombre de polls. Ensuite viennent le tableau des résultats, la décomposition de la latence et les checks P1 à P4.
-5. Les boutons *P2 Latence / P1 Plafond / P1 Taille / P3 Concurrence / P4 Swap connexion* lancent les scénarios. Chaque activité de requête a son propre bloc de résultat.
-6. Les logs sont dans le canal de sortie **GatePulse**. Le JSONL et les rapports sont dans `gatepulse.logDirectory` (par défaut, le global storage de l'extension).
+2. Dans la fenêtre Extension Development Host, ajouter un tenant : icône GatePulse dans la barre
+   d'activité → **+ Tenant** (ou palette de commandes → **GatePulse: Add Tenant**) — alias, tenantId
+   Entra ID, workspaceId Fabric. Le pipeline générique est provisionné automatiquement au premier
+   run sur ce tenant, pas à l'ajout.
+3. Cliquer sur le tenant dans la sidebar (vue **Tenants**) ouvre directement le panel SQL.
+4. Choisir la connexion : coller le GUID, ou **Parcourir…** pour piocher dans les connexions SQL du
+   tenant (gateway ou cloud, cf. §1). La liste des bases du champ suivant se remplit automatiquement
+   dès qu'une connexion valide est renseignée (mise en cache par connexion, bouton ↻ pour forcer un
+   rafraîchissement) ; la saisie manuelle reste toujours possible si la liste échoue.
+5. Écrire la requête dans l'éditeur (coloration syntaxique T-SQL, CodeMirror), puis **Run** (ou
+   Ctrl+Entrée). Pendant l'exécution, le panneau affiche un spinner, le temps écoulé en direct, la
+   phase et le statut du job. Le résultat de chaque activité de requête est une table triable
+   (cliquer l'en-tête) et filtrable colonne par colonne (ligne de champs sous l'en-tête) ; **Exporter
+   CSV** écrit les lignes actuellement affichées (après tri/filtre).
+6. Un bandeau signale les anomalies qui comptent au quotidien (troncature silencieuse à 5000 lignes,
+   paramètres non liés, connexion résolue différente de celle demandée...) ; le détail complet de
+   tous les checks reste dans **Diagnostics**, replié par défaut. L'historique des requêtes (par
+   tenant, ré-exécutable en un clic) est dans la section **Historique**.
+7. Les logs sont dans le canal de sortie **GatePulse**. Le JSONL et les rapports sont dans `gatepulse.logDirectory` (par défaut, le global storage de l'extension).
 
 Les erreurs sont classées par type, avec un badge distinct : `sql`, `resultTooLarge` (sortie > 4 Mo), `connection` (gateway, GUID, identifiants), `auth`, `permission`, `timeout`, `trigger`, `rateLimit`, `deduped`, `resultRetrieval`, `pipelineFailed`, `cancelled`, `network`, `config`. Le classement sql/connection est une heuristique sur le message de l'activité : le message brut est toujours affiché.
 
