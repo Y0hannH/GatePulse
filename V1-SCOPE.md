@@ -19,10 +19,25 @@ d'essai sans conséquence. En tenir compte pour les prochaines évolutions de `p
 
 ## Objectif V1
 
-**Outil interne pour data engineers** : exécuter du SQL ad hoc sur les bases on-prem / IP-filtrées
-directement depuis VS Code, sans repasser par le contournement actuel (accès manuel via l'UI Fabric,
-SSMS via VPN, ou équivalent — à documenter précisément côté utilisateurs). L'extension VS Code est
-la seule surface produit retenue pour la V1.
+**Outil interne pour data engineers** : exécuter du SQL ad hoc directement depuis VS Code via
+n'importe quelle connexion Fabric autorisée, sans repasser par le contournement actuel (accès
+manuel via l'UI Fabric, SSMS via VPN, ou équivalent — à documenter précisément côté utilisateurs).
+L'extension VS Code est la seule surface produit retenue pour la V1.
+
+**Élargi le 2026-09-25 (initialement restreint aux connexions gateway) :** le pipeline ne fait que
+recevoir un GUID de connexion en paramètre (`externalReferences.connection`, cf.
+`provisioning/pipeline-template.json`) — il n'a jamais eu de dépendance technique au type de
+connexion, gateway ou cloud (confirmé empiriquement par le point P4 du PoC : swap de connexion via
+API). Deux scénarios distincts justifient GatePulse, tous deux couverts par le même mécanisme :
+1. **Gateway** : contourner un accès réseau restreint (base on-prem / IP-filtrée) — le scénario
+   d'origine du brief.
+2. **Cloud** : exécuter une requête via une connexion Fabric à laquelle l'utilisateur est autorisé,
+   sans avoir lui-même d'accès direct (login, réseau) à la base derrière — le pipeline s'exécute
+   avec les identifiants configurés sur la connexion, pas ceux de l'utilisateur.
+
+`isSupportedSqlConnection` (`fabricClient.ts`, ex-`isGatewaySqlConnection`) ne filtre donc plus que
+sur la famille SQL de `connectionDetails.type`, sans condition sur `connectivityType`. Voir aussi
+la correction du filtrage au point 3 ci-dessous.
 
 ## Statut du repo et distribution
 
@@ -271,12 +286,14 @@ interface FabricConnection {
 }
 ```
 
-**Filtrage.** GatePulse n'a de sens que pour les connexions **gateway** vers une base **SQL** — le
-picker (QuickPick, `displayName` + `gatewayId` en detail) ne montre que
-`connectivityType === 'OnPremisesGateway'` et un `connectionDetails.type` de la famille SQL. Les
-connexions cloud/partagées non-gateway (hors du scénario même de GatePulse, cf. README §1) sont
-exclues. Le VNet gateway (`VirtualNetworkGateway`) pourrait entrer dans le même scénario mais n'est
-pas confirmé comme cas d'usage réel — à trancher à l'implémentation si le besoin se présente.
+**Filtrage — élargi le 2026-09-25.** Restreint au départ à `connectivityType ===
+'OnPremisesGateway'` (+ `connectionDetails.type` de la famille SQL), sous l'hypothèse que GatePulse
+n'avait de sens que pour les connexions gateway. Corrigé : le pipeline ne dépend techniquement que
+du GUID de connexion (cf. Objectif V1 ci-dessus, cas d'usage cloud), donc `isSupportedSqlConnection`
+ne teste plus que la famille SQL de `connectionDetails.type` — gateway (`OnPremisesGateway`,
+`VirtualNetworkGateway`, ...) et cloud (`ShareableCloud`, `PersonalCloud`, ...) sont désormais tous
+deux éligibles. Le picker (QuickPick) affiche `gateway {gatewayId}` en detail quand la connexion en
+a un, sinon `connectivityType` — pour rester lisible sur une liste mixte gateway/cloud.
 
 **`databaseName` reste en saisie libre pour la V1.** Fabric ne connaît pas les bases qui existent
 « derrière » une connexion SQL générique — les énumérer demanderait de faire tourner une requête
@@ -406,7 +423,8 @@ l'implémentation, pas un doute de conception.
    (`errors.ts`), relâchement de `checkConfig` sur `pipelineId`.
 3. ~~Définir le modèle de settings multi-tenant~~ — fait, cf. section 2 ci-dessus.
 4. ~~Concevoir la découverte dynamique des connexions/pipelines~~ — fait, cf. section 3 ci-dessus.
-   **Implémenté (2026-09-24)** : `listConnections`/`isGatewaySqlConnection` (`fabricClient.ts`),
+   **Implémenté (2026-09-24, filtrage élargi le 2026-09-25)** : `listConnections`/
+   `isSupportedSqlConnection` (`fabricClient.ts`),
    commandes `GatePulse: Pick Connection` / `Pick Pipeline (Override)` / `Refresh Connections`
    (`extension.ts`), toutes en command palette pour l'instant — pas encore de bouton « Parcourir… »
    ni de sélecteur dans le panel lui-même (délibérément laissé au point 4, cf. division déjà posée :

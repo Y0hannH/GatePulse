@@ -1,7 +1,7 @@
 {
   "name": "gatepulse-fabric-sql-demo",
-  "displayName": "GatePulse — SQL via Fabric Gateway (demo)",
-  "description": "Demo: run ad hoc SQL on an on-prem / IP-filtered database through a Microsoft Fabric pipeline (Lookup activity + gateway connection), driven by the Fabric REST API.",
+  "displayName": "GatePulse — SQL via Fabric Pipeline (demo)",
+  "description": "Demo: run ad hoc SQL through a Microsoft Fabric pipeline (Lookup/Script activity), using any Fabric-authorized SQL connection — gateway-routed (on-prem / IP-filtered) or cloud — driven only by the Fabric REST API.",
   "version": "0.1.0",
   "private": true,
   "publisher": "gatepulse",
@@ -168,7 +168,7 @@
               },
               "connectionGuid": {
                 "type": "string",
-                "description": "Optional: gateway connection GUID pre-filled in the panel."
+                "description": "Optional: Fabric SQL connection GUID pre-filled in the panel (gateway-routed or cloud)."
               },
               "databaseName": {
                 "type": "string",

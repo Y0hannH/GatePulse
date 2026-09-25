@@ -5,7 +5,7 @@ import * as vscode from 'vscode';
 import type { AuthFlow, ParameterNames, ParameterPayloadFormat, TenantEntry } from '../core/config';
 import { buildConfigForTenant, isGuid } from '../core/config';
 import type { FabricConnection } from '../core/fabricClient';
-import { isGatewaySqlConnection } from '../core/fabricClient';
+import { isSupportedSqlConnection } from '../core/fabricClient';
 import type { LogEntry, LogSink } from '../core/logger';
 import { formatEntry } from '../core/logger';
 import type { Session } from '../core/session';
@@ -160,7 +160,7 @@ export function activate(context: vscode.ExtensionContext): void {
     if (cachedConnections) return cachedConnections;
     const s = getSession();
     try {
-      cachedConnections = (await s.client.listConnections()).filter(isGatewaySqlConnection);
+      cachedConnections = (await s.client.listConnections()).filter(isSupportedSqlConnection);
     } catch (err) {
       s.logger.warn(
         'connections.listFailed',
@@ -262,7 +262,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const connections = await getConnections();
       if (connections.length === 0) {
         void vscode.window.showInformationMessage(
-          'GatePulse : aucune connexion gateway SQL trouvée (ou liste indisponible) — saisir le GUID à la main dans le panel.',
+          'GatePulse : aucune connexion SQL trouvée (ou liste indisponible) — saisir le GUID à la main dans le panel.',
         );
         return;
       }
@@ -270,10 +270,11 @@ export function activate(context: vscode.ExtensionContext): void {
         connections.map((c) => ({
           label: c.displayName,
           description: c.id,
-          detail: c.gatewayId ? `gateway ${c.gatewayId}` : undefined,
+          // No gatewayId on a cloud connection — detail then just shows the connection's own type.
+          detail: c.gatewayId ? `gateway ${c.gatewayId}` : c.connectivityType,
           connection: c,
         })),
-        { placeHolder: 'GatePulse : choisir une connexion gateway (GUID copié dans le presse-papiers)' },
+        { placeHolder: 'GatePulse : choisir une connexion SQL (GUID copié dans le presse-papiers)' },
       );
       if (!picked) return;
       // Fills the panel field directly when it's the source of the request; clipboard copy stays
@@ -319,7 +320,7 @@ export function activate(context: vscode.ExtensionContext): void {
       cachedConnections = undefined;
       const connections = await getConnections();
       void vscode.window.showInformationMessage(
-        `GatePulse : ${connections.length} connexion(s) gateway SQL trouvée(s).`,
+        `GatePulse : ${connections.length} connexion(s) SQL trouvée(s).`,
       );
     }),
   );

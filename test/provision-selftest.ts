@@ -10,7 +10,7 @@ import * as http from 'http';
 
 import { buildConfigForTenant, checkTenants, mergeConfig } from '../src/core/config';
 import type { FabricConnection } from '../src/core/fabricClient';
-import { FabricClient, isGatewaySqlConnection } from '../src/core/fabricClient';
+import { FabricClient, isSupportedSqlConnection } from '../src/core/fabricClient';
 import { ConsoleSink, Logger } from '../src/core/logger';
 import { ensurePipeline, GATEPULSE_PIPELINE_NAME } from '../src/core/provision';
 
@@ -268,7 +268,7 @@ void (async () => {
   expect('buildConfigForTenant: falls back to global clientId', cfgFallback.clientId, 'global-client-id');
   expect('buildConfigForTenant: pipelineId empty by default', cfgFallback.pipelineId, '');
 
-  console.log('\n--- listConnections / isGatewaySqlConnection (V1 point 3) ---');
+  console.log('\n--- listConnections / isSupportedSqlConnection (V1 point 3, widened 2026-09-25) ---');
   {
     const gatewaySql: FabricConnection = {
       id: randomUUID(),
@@ -279,7 +279,7 @@ void (async () => {
     };
     const cloudSql: FabricConnection = {
       id: randomUUID(),
-      displayName: 'Cloud SQL (not gateway)',
+      displayName: 'Cloud SQL',
       connectivityType: 'ShareableCloud',
       connectionDetails: { type: 'SQL' },
     };
@@ -293,9 +293,15 @@ void (async () => {
     const client = makeClient(mock.url);
     const all = await client.listConnections();
     expect('listConnections: returns all 3', all.length, 3);
-    const filtered = all.filter(isGatewaySqlConnection);
-    expect('isGatewaySqlConnection: keeps only the gateway SQL one', filtered.length, 1);
-    expect('isGatewaySqlConnection: correct one kept', filtered[0]?.id, gatewaySql.id);
+    const filtered = all.filter(isSupportedSqlConnection);
+    // Any SQL connection qualifies regardless of connectivityType — the pipeline only cares about
+    // the connection GUID it's given, never how it's routed (gateway vs. cloud).
+    expect('isSupportedSqlConnection: keeps both SQL connections, gateway or cloud', filtered.length, 2);
+    expect(
+      'isSupportedSqlConnection: excludes the non-SQL gateway connection',
+      filtered.some((c) => c.id === gatewayNonSql.id),
+      false,
+    );
     mock.close();
   }
 })();

@@ -242,7 +242,7 @@ export class SqlPanel {
 </head>
 <body>
   <header>
-    <h1>GatePulse <span class="sub">SQL via Fabric Gateway</span></h1>
+    <h1>GatePulse <span class="sub">SQL via un pipeline Fabric</span></h1>
     <div class="links"><a href="#" id="openSettings">Paramètres</a> · <a href="#" id="showLogs">Logs</a></div>
   </header>
   <div class="tenant-bar">
@@ -257,7 +257,7 @@ export class SqlPanel {
     <label>Connection GUID
       <div class="with-button">
         <input id="connectionGuid" spellcheck="false" placeholder="00000000-0000-0000-0000-000000000000">
-        <button id="pickConnection" class="secondary" title="Choisir une connexion gateway">Parcourir…</button>
+        <button id="pickConnection" class="secondary" title="Choisir une connexion SQL (gateway ou cloud)">Parcourir…</button>
       </div>
     </label>
     <label>Base de données<input id="databaseName" spellcheck="false"></label>

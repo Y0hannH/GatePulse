@@ -14,9 +14,16 @@ export interface FabricConnection {
   connectionDetails?: { type?: string; path?: string };
 }
 
-/** GatePulse only makes sense for gateway-routed SQL connections — see README §1 (the scenario itself). */
-export function isGatewaySqlConnection(c: FabricConnection): boolean {
-  return c.connectivityType === 'OnPremisesGateway' && /sql/i.test(c.connectionDetails?.type ?? '');
+/**
+ * The pipeline's Lookup activity takes a connection GUID as a runtime parameter
+ * (`externalReferences.connection`, see provisioning/pipeline-template.json) — it never cares
+ * whether that connection is gateway-routed or cloud (P4 of the PoC confirmed this: whatever GUID
+ * is passed is the one resolved at runtime). So the only real constraint is the connector family
+ * (SQL), not connectivityType. Kept as a named predicate — not inlined into the `.filter()` call —
+ * because "what counts as usable here" is a decision worth a name, not just a one-off filter.
+ */
+export function isSupportedSqlConnection(c: FabricConnection): boolean {
+  return /sql/i.test(c.connectionDetails?.type ?? '');
 }
 
 export interface JobInstance {

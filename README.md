@@ -1,6 +1,6 @@
-# GatePulse — démo « SQL via Gateway Fabric »
+# GatePulse — démo « SQL via pipeline Fabric »
 
-Exécuter du SQL ad hoc sur une base on-prem / filtrée par IP en passant par un pipeline Fabric (activité Lookup et/ou Script + connexion gateway), piloté **uniquement par l'API REST Fabric**. Le projet mesure aussi les 4 points de risque du brief.
+Exécuter du SQL ad hoc via un pipeline Fabric (activité Lookup et/ou Script), piloté **uniquement par l'API REST Fabric**, sur n'importe quelle connexion Fabric autorisée — gateway (base on-prem / filtrée par IP) ou cloud. Le pipeline ne fait que recevoir un GUID de connexion en paramètre : il l'exécute avec les identifiants configurés sur *cette connexion*, pas les tiens — deux scénarios distincts en profitent : contourner un accès réseau restreint (gateway), ou exécuter une requête via une connexion à laquelle tu es autorisé sans avoir toi-même d'accès direct à la base (cloud). Le projet mesure aussi les 4 points de risque du brief.
 
 Le runner lit **toutes les activités de requête** du run (types `Lookup` et `Script`, ou la liste `activityNames`). Chaque check est émis par activité, et `all` termine par une comparaison côte à côte (durées, taille de sortie, limites, données identiques ou non).
 
@@ -38,7 +38,7 @@ Au sign-in, le log `auth.success` affiche l'utilisateur, l'appId et les scopes r
 - `authFlow` : `auto` (défaut), `azureCli`, `interactive` ou `deviceCode`.
 - Ne renseigner `clientId` que si une app registration autorisée pour les connexions utilisateur existe.
 - Les tokens restent en mémoire : l'extension les garde pendant la session VS Code, alors que le CLI redemande la connexion à chaque commande. Un `az login` évite ces popups répétés.
-- Le compte doit être au minimum **Contributor** du workspace et **utilisateur de la connexion gateway**.
+- Le compte doit être au minimum **Contributor** du workspace et **utilisateur de la connexion** utilisée (gateway ou cloud).
 
 ## 2. Build
 
