@@ -155,8 +155,14 @@ button:disabled { opacity: 0.4; cursor: default; }
   font-size: var(--vscode-editor-font-size);
   color: var(--vscode-editor-foreground);
 }
-.CodeMirror-hint { color: inherit; }
+.CodeMirror-hint { color: inherit; display: flex; align-items: center; gap: 6px; }
 li.CodeMirror-hint-active { background: var(--vscode-list-activeSelectionBackground, var(--vscode-focusBorder)); color: var(--vscode-list-activeSelectionForeground, #fff); }
+/* Schema/table/view/column tell-apart, same family as the sidebar tree's own icons. */
+.cm-hint-schema .codicon { color: var(--vscode-charts-yellow, #dcdcaa); }
+.cm-hint-table .codicon { color: var(--vscode-charts-blue, #569cd6); }
+.cm-hint-view .codicon { color: var(--vscode-charts-purple, #c586c0); }
+.cm-hint-column .codicon { color: var(--vscode-charts-green, #b5cea8); }
+li.CodeMirror-hint-active .codicon { color: inherit; }
 
 /* ------------------------------------------------------------------ status / progress */
 .status {

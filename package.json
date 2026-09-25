@@ -52,8 +52,8 @@
         "title": "GatePulse: Open Tenant"
       },
       {
-        "command": "gatepulse.openTableQuery",
-        "title": "GatePulse: Query Table"
+        "command": "gatepulse.selectTop100",
+        "title": "GatePulse: Select Top 100 Rows"
       },
       {
         "command": "gatepulse.refreshSchemaTree",
@@ -102,7 +102,7 @@
           "when": "false"
         },
         {
-          "command": "gatepulse.openTableQuery",
+          "command": "gatepulse.selectTop100",
           "when": "false"
         }
       ],
@@ -141,6 +141,13 @@
           "command": "gatepulse.signOut",
           "when": "view == gatepulse.tenantsView",
           "group": "9_more@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "gatepulse.selectTop100",
+          "when": "view == gatepulse.tenantsView && (viewItem == table || viewItem == view)",
+          "group": "1_actions"
         }
       ]
     },

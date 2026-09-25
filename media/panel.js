@@ -4,7 +4,6 @@
   const vscode = acquireVsCodeApi();
   const $ = (id) => /** @type {HTMLElement} */ (document.getElementById(id));
   const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  const DEFAULT_QUERY = 'SELECT TOP 10 name, create_date FROM sys.tables ORDER BY create_date DESC';
 
   const inputs = {
     connectionGuid: /** @type {HTMLInputElement} */ ($('connectionGuid')),
@@ -58,7 +57,7 @@
 
   // eslint-disable-next-line no-undef
   const cm = CodeMirror($('queryEditor'), {
-    value: saved.query || DEFAULT_QUERY,
+    value: saved.query || '', // no canned example query — an empty editor, always (explicit request)
     mode: 'text/x-mssql',
     theme: 'gatepulse',
     lineNumbers: true,
@@ -76,9 +75,12 @@
   // The editor box is CSS-resizable (see .query-editor .CodeMirror { resize: vertical }); CodeMirror
   // doesn't notice a manual CSS resize on its own, so it needs a nudge to re-measure lines/gutter.
   new ResizeObserver(() => cm.refresh()).observe(cm.getWrapperElement());
-  // Auto-popup right after "." — Ctrl+Space above stays for anywhere-anytime completion.
-  cm.on('inputRead', (instance, change) => {
-    if (change.text[0] === '.') {
+  // Auto-popup right after "." — Ctrl+Space above stays for anywhere-anytime completion. Checks the
+  // actual character left of the cursor rather than change.text[0]: more robust than assuming the
+  // change is exactly one typed character (IME, autoclose-pairs, etc. can shape it differently).
+  cm.on('inputRead', (instance) => {
+    const cur = instance.getCursor();
+    if (instance.getLine(cur.line).charAt(cur.ch - 1) === '.') {
       // eslint-disable-next-line no-undef
       CodeMirror.showHint(instance, gatepulseHint, { completeSingle: false });
     }
@@ -113,7 +115,11 @@
 
   // ---------------------------------------------------------------- database picker
   // Fired on blur/commit (not every keystroke) so a half-typed GUID never triggers a run.
-  inputs.connectionGuid.addEventListener('change', () => requestDatabases(false));
+  inputs.connectionGuid.addEventListener('change', () => {
+    requestDatabases(false);
+    warmTables();
+  });
+  inputs.databaseName.addEventListener('change', () => warmTables());
   $('refreshDatabases').addEventListener('click', () => requestDatabases(true));
 
   function requestDatabases(force) {
@@ -150,6 +156,17 @@
   const pendingTablesResolvers = [];
   const columnsBySchema = new Map(); // `${schemaKey}:${tableNameLower}` -> ColumnInfo[]
   const pendingColumnsResolvers = new Map(); // tableNameLower -> resolve[]
+
+  /** Kicks off the table-list fetch as soon as connection+database are known, well before the user
+   *  starts typing — a real discovery query can take real seconds (it's a genuine Fabric pipeline
+   *  run, not a local lookup), and firing it only at the moment "." is typed made autocomplete look
+   *  broken: by the time it resolved, the cursor had moved and CodeMirror silently drops the (now
+   *  stale) completion. Warming it up removes that latency from the interaction entirely. */
+  function warmTables() {
+    const connectionGuid = inputs.connectionGuid.value.trim();
+    const databaseName = inputs.databaseName.value.trim();
+    if (GUID_RE.test(connectionGuid) && databaseName) ensureTables(connectionGuid, databaseName);
+  }
 
   function ensureTables(connectionGuid, databaseName) {
     const key = `${connectionGuid}:${databaseName}`;
@@ -191,7 +208,7 @@
     });
   }
 
-  /** `word.partial` → columns of `word` if it's a known table; bare `partial` → table names. */
+  /** `word.partial` → schema/table members if `word` is known; bare `partial` → schemas + tables. */
   function wordContext(cmInst) {
     const cur = cmInst.getCursor();
     const line = cmInst.getLine(cur.line).slice(0, cur.ch);
@@ -207,7 +224,27 @@
     return { qualifier: null, partial: bare ? bare[1] : '', fromCh: cur.ch - (bare ? bare[1].length : 0) };
   }
 
-  /** Async CodeMirror hint (show-hint addon convention: `.async = true`, resolves via `callback`). */
+  const HINT_ICONS = { schema: 'symbol-namespace', table: 'table', view: 'eye', column: 'symbol-field' };
+
+  /** A rich show-hint item: icon + name, classed by kind so schemas/tables/views/columns are told
+   *  apart at a glance instead of one flat list of names. */
+  function hintItem(name, kind) {
+    return {
+      text: name,
+      className: `cm-hint-${kind}`,
+      render: (elt) => {
+        elt.appendChild(icon(HINT_ICONS[kind]));
+        elt.appendChild(document.createTextNode(` ${name}`));
+      },
+    };
+  }
+
+  /**
+   * Async CodeMirror hint (show-hint addon convention: `.async = true`, resolves via `callback`).
+   * Bare word: matching schema names + matching table/view names (unqualified — most queries never
+   * bother with the schema prefix). `schema.partial`: tables/views of that schema. `table.partial`:
+   * that table's columns (fetched lazily, only for the one table actually being typed against).
+   */
   function gatepulseHint(cmInst, callback) {
     const connectionGuid = inputs.connectionGuid.value.trim();
     const databaseName = inputs.databaseName.value.trim();
@@ -217,19 +254,32 @@
     const from = CodeMirror.Pos(cur.line, ctx.fromCh);
     const partialLower = ctx.partial.toLowerCase();
 
-    ensureTables(connectionGuid, databaseName).then((tables) => {
+    ensureTables(connectionGuid, databaseName).then((objects) => {
       if (ctx.qualifier) {
-        const table = tables.find((t) => t.name.toLowerCase() === ctx.qualifier.toLowerCase());
+        const qualifierLower = ctx.qualifier.toLowerCase();
+        const isSchema = objects.some((o) => o.schema.toLowerCase() === qualifierLower);
+        if (isSchema) {
+          const list = objects
+            .filter((o) => o.schema.toLowerCase() === qualifierLower && o.name.toLowerCase().startsWith(partialLower))
+            .map((o) => hintItem(o.name, o.type));
+          callback({ list, from, to: cur });
+          return;
+        }
+        const table = objects.find((o) => o.name.toLowerCase() === qualifierLower);
         if (!table) return callback({ list: [], from, to: cur });
         ensureColumns(connectionGuid, databaseName, table).then((columns) => {
           const list = columns
             .filter((c) => c.name.toLowerCase().startsWith(partialLower))
-            .map((c) => c.name);
+            .map((c) => hintItem(c.name, 'column'));
           callback({ list, from, to: cur });
         });
         return;
       }
-      const list = tables.map((t) => t.name).filter((n) => n.toLowerCase().startsWith(partialLower));
+      const schemas = [...new Set(objects.map((o) => o.schema))];
+      const list = [
+        ...schemas.filter((s) => s.toLowerCase().startsWith(partialLower)).map((s) => hintItem(s, 'schema')),
+        ...objects.filter((o) => o.name.toLowerCase().startsWith(partialLower)).map((o) => hintItem(o.name, o.type)),
+      ];
       callback({ list, from, to: cur });
     });
   }
@@ -249,12 +299,14 @@
         banner.textContent = problems.length ? `Configuration incomplète : ${problems.join(' • ')}` : '';
         renderHistory(m.history || []);
         requestDatabases(false); // uses the panel-side cache if this connection was already resolved this session
+        warmTables();
         break;
       }
       case 'setConnectionGuid':
         inputs.connectionGuid.value = m.value;
         persist();
         requestDatabases(false);
+        warmTables();
         break;
       case 'prefillQuery':
         inputs.connectionGuid.value = m.connectionGuid;
@@ -262,6 +314,7 @@
         cm.setValue(m.query);
         persist();
         requestDatabases(false);
+        warmTables();
         break;
       case 'databasesLoading':
         if (m.connectionGuid === inputs.connectionGuid.value.trim()) setDatabasesLoading(true);
@@ -341,6 +394,7 @@
           cm.setValue(h.query);
           persist();
           requestDatabases(false);
+          warmTables();
         };
         return el(
           'li',

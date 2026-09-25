@@ -16,6 +16,7 @@ import type { Session } from '../core/session';
 import { createSession } from '../core/session';
 import type { PanelServices } from './panel';
 import { SqlPanel } from './panel';
+import type { TableTreeItem } from './tenantTree';
 import { TenantTreeProvider } from './tenantTree';
 
 /** Resolves and caches the pipeline id on `session.cfg` — shared by a query run, the panel's
@@ -326,9 +327,9 @@ export function activate(context: vscode.ExtensionContext): void {
     treeDataProvider: tenantTree,
   });
 
-  /** Builds `SELECT TOP 100 ...` for a tree-clicked table, naming columns explicitly instead of `*`
-   *  only when at least one column has to be dropped — no point in the verbosity otherwise. Falls
-   *  back to `*` if the column list can't be fetched at all (never block the click on metadata). */
+  /** Builds `SELECT TOP 100 ...` for "GatePulse: Select Top 100 Rows", naming columns explicitly
+   *  instead of `*` only when at least one column has to be dropped — no point in the verbosity
+   *  otherwise. Falls back to `*` if the column list can't be fetched at all (never block on metadata). */
   const buildTableQuery = async (
     connectionGuid: string,
     databaseName: string,
@@ -366,28 +367,26 @@ export function activate(context: vscode.ExtensionContext): void {
       if (alias !== getActiveTenantAlias()) await switchToTenant(alias);
       SqlPanel.show(context, panelServices, channel);
     }),
-    // Sidebar tree table/view click: one step further than openTenant — also fills the panel's
-    // connection/database/query so the "browse" and "query" flows meet in one click.
-    vscode.commands.registerCommand(
-      'gatepulse.openTableQuery',
-      async (args: {
-        alias: string;
-        connectionGuid: string;
-        databaseName: string;
-        schema: string;
-        table: string;
-      }) => {
-        if (args.alias !== getActiveTenantAlias()) await switchToTenant(args.alias);
-        SqlPanel.show(context, panelServices, channel);
-        const query = await buildTableQuery(
-          args.connectionGuid,
-          args.databaseName,
-          args.schema,
-          args.table,
-        );
-        SqlPanel.current?.prefillQuery(args.connectionGuid, args.databaseName, query);
-      },
-    ),
+    // Right-click on a table/view in the tree — deliberately NOT a plain-click side effect anymore:
+    // that used to overwrite whatever the user was typing in the editor the moment they clicked a
+    // row just to browse it. VS Code passes the clicked TreeItem itself as the sole argument for a
+    // view/item/context command.
+    vscode.commands.registerCommand('gatepulse.selectTop100', async (item: TableTreeItem) => {
+      if (!item) return;
+      const { tenantAlias, connectionGuid, databaseName, schemaName, tableName } = item;
+      if (tenantAlias !== getActiveTenantAlias()) await switchToTenant(tenantAlias);
+      SqlPanel.show(context, panelServices, channel);
+      // Immediate `*` first — the exclusion check is itself a real query and can take a few seconds;
+      // no reason to leave the panel empty that whole time when a plain SELECT * works right away.
+      // Silently upgraded to an explicit column list moments later if one needs excluding.
+      SqlPanel.current?.prefillQuery(
+        connectionGuid,
+        databaseName,
+        `SELECT TOP 100 * FROM [${schemaName}].[${tableName}]`,
+      );
+      const refined = await buildTableQuery(connectionGuid, databaseName, schemaName, tableName);
+      SqlPanel.current?.prefillQuery(connectionGuid, databaseName, refined);
+    }),
     vscode.commands.registerCommand('gatepulse.refreshSchemaTree', () => {
       databaseCache.clear();
       schemaCache.clear();

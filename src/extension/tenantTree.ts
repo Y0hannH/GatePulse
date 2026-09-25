@@ -60,13 +60,9 @@ export class TableTreeItem extends vscode.TreeItem {
     super(tableName, vscode.TreeItemCollapsibleState.Collapsed);
     this.tooltip = `${schemaName}.${tableName} (${objectType === 'view' ? 'vue' : 'table'})`;
     this.iconPath = new vscode.ThemeIcon(objectType === 'view' ? 'eye' : 'table');
+    // No `command`: a click only expands to the columns (browsing shouldn't have a side effect on
+    // the editor — "GatePulse: Select Top 100 Rows", right-click, is the explicit way to query it).
     this.contextValue = objectType;
-    // Click = browse straight into a query: opens the panel with connection/database/query prefilled.
-    this.command = {
-      command: 'gatepulse.openTableQuery',
-      title: 'Query',
-      arguments: [{ alias: tenantAlias, connectionGuid, databaseName, schema: schemaName, table: tableName }],
-    };
   }
 }
 
