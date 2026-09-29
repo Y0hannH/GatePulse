@@ -10,7 +10,7 @@ import type { LogEntry, LogSink } from '../core/logger';
 import { formatEntry } from '../core/logger';
 import { ensurePipeline } from '../core/provision';
 import type { ColumnInfo, SchemaObject } from '../core/runQuery';
-import { listColumns, listDatabases, listSchemaObjects } from '../core/runQuery';
+import { listColumns, listDatabases, listSchemaObjects, sqlIdentifier } from '../core/runQuery';
 import type { ScenarioContext } from '../core/scenarios';
 import type { Session } from '../core/session';
 import { createSession } from '../core/session';
@@ -107,14 +107,25 @@ function readGlobalConfig() {
   };
 }
 
+/** Unfiltered read of `gatepulse.tenants`, kept separate from readTenants() below so a write-back
+ *  (addTenant, updateActiveTenant) never has to round-trip through the filtered list — doing so
+ *  would silently drop any entry a user has mid-edit (e.g. an alias typed before tenantId/workspaceId)
+ *  the next time any unrelated tenant action wrote the setting. */
+function readRawTenants(): unknown[] {
+  return vscode.workspace.getConfiguration('gatepulse').get<unknown[]>('tenants', []);
+}
+
 /**
  * `gatepulse.tenants`: no `scope: "resource"` — lives in User Settings by default, not tied to a
  * project/repo. GatePulse is used standalone, like the mssql extension (V1-SCOPE.md §2).
  */
 export function readTenants(): TenantEntry[] {
-  const raw = vscode.workspace.getConfiguration('gatepulse').get<TenantEntry[]>('tenants', []);
-  return raw.filter(
-    (t) => t && typeof t.alias === 'string' && typeof t.tenantId === 'string' && typeof t.workspaceId === 'string',
+  return readRawTenants().filter(
+    (t): t is TenantEntry =>
+      !!t &&
+      typeof (t as TenantEntry).alias === 'string' &&
+      typeof (t as TenantEntry).tenantId === 'string' &&
+      typeof (t as TenantEntry).workspaceId === 'string',
   );
 }
 
@@ -127,14 +138,17 @@ function getActiveTenant(context: vscode.ExtensionContext, tenants: TenantEntry[
   return tenants.find((t) => t.alias === activeAlias) ?? tenants[0] ?? EMPTY_TENANT;
 }
 
-/** Merges a patch into the active tenant's `gatepulse.tenants` entry — Global scope, never Workspace (V1-SCOPE.md §2/§3). */
+/** Merges a patch into the active tenant's `gatepulse.tenants` entry — Global scope, never Workspace
+ *  (V1-SCOPE.md §2/§3). Writes back over readRawTenants(), not readTenants(): any other malformed
+ *  entry in the array is passed through untouched instead of being dropped by the round-trip. */
 async function updateActiveTenant(
   context: vscode.ExtensionContext,
   patch: Partial<Omit<TenantEntry, 'alias' | 'tenantId' | 'workspaceId'>>,
 ): Promise<void> {
-  const tenants = readTenants();
-  const active = getActiveTenant(context, tenants);
-  const updated = tenants.map((t) => (t.alias === active.alias ? { ...t, ...patch } : t));
+  const active = getActiveTenant(context, readTenants());
+  const updated = readRawTenants().map((t) =>
+    t && typeof t === 'object' && (t as TenantEntry).alias === active.alias ? { ...t, ...patch } : t,
+  );
   await vscode.workspace
     .getConfiguration('gatepulse')
     .update('tenants', updated, vscode.ConfigurationTarget.Global);
@@ -256,6 +270,15 @@ export function activate(context: vscode.ExtensionContext): void {
     if (alias !== getActiveTenantAlias()) await switchToTenant(alias);
   };
 
+  // In-flight dedup for the three discovery calls below: the panel and the sidebar tree can both
+  // ask for the same (connection, database[, schema, table]) within the same tick — e.g. opening
+  // the panel while its schema tree node is already expanding — and each is a real Fabric pipeline
+  // run, not a local lookup. Sharing the pending promise means a second caller awaits the first
+  // one's result instead of triggering a second run for data the first is already fetching.
+  const databasesInFlight = new Map<string, Promise<string[]>>();
+  const schemaObjectsInFlight = new Map<string, Promise<SchemaObject[]>>();
+  const columnsInFlight = new Map<string, Promise<ColumnInfo[]>>();
+
   const getDatabases = async (
     connectionGuid: string,
     databaseNameHint: string,
@@ -264,13 +287,23 @@ export function activate(context: vscode.ExtensionContext): void {
     if (!force) {
       const cached = databaseCache.get(connectionGuid);
       if (cached) return cached;
+      const pending = databasesInFlight.get(connectionGuid);
+      if (pending) return pending;
     }
-    const s = getSession();
-    await ensurePipelineResolved(s);
-    const names = await listDatabases(scenarioContext(s), connectionGuid, databaseNameHint);
-    databaseCache.set(connectionGuid, names);
-    persistSchemaCaches();
-    return names;
+    const promise = (async () => {
+      const s = getSession();
+      await ensurePipelineResolved(s);
+      const names = await listDatabases(scenarioContext(s), connectionGuid, databaseNameHint);
+      databaseCache.set(connectionGuid, names);
+      persistSchemaCaches();
+      return names;
+    })();
+    databasesInFlight.set(connectionGuid, promise);
+    try {
+      return await promise;
+    } finally {
+      if (databasesInFlight.get(connectionGuid) === promise) databasesInFlight.delete(connectionGuid);
+    }
   };
 
   const getSchemaObjects = async (
@@ -280,12 +313,22 @@ export function activate(context: vscode.ExtensionContext): void {
     const key = `${connectionGuid}:${databaseName}`;
     const cached = schemaCache.get(key);
     if (cached) return cached;
-    const s = getSession();
-    await ensurePipelineResolved(s);
-    const objects = await listSchemaObjects(scenarioContext(s), connectionGuid, databaseName);
-    schemaCache.set(key, objects);
-    persistSchemaCaches();
-    return objects;
+    const pending = schemaObjectsInFlight.get(key);
+    if (pending) return pending;
+    const promise = (async () => {
+      const s = getSession();
+      await ensurePipelineResolved(s);
+      const objects = await listSchemaObjects(scenarioContext(s), connectionGuid, databaseName);
+      schemaCache.set(key, objects);
+      persistSchemaCaches();
+      return objects;
+    })();
+    schemaObjectsInFlight.set(key, promise);
+    try {
+      return await promise;
+    } finally {
+      if (schemaObjectsInFlight.get(key) === promise) schemaObjectsInFlight.delete(key);
+    }
   };
 
   const getColumns = async (
@@ -297,12 +340,22 @@ export function activate(context: vscode.ExtensionContext): void {
     const key = `${connectionGuid}:${databaseName}:${schema}:${table}`;
     const cached = columnsCache.get(key);
     if (cached) return cached;
-    const s = getSession();
-    await ensurePipelineResolved(s);
-    const columns = await listColumns(scenarioContext(s), connectionGuid, databaseName, schema, table);
-    columnsCache.set(key, columns);
-    persistSchemaCaches();
-    return columns;
+    const pending = columnsInFlight.get(key);
+    if (pending) return pending;
+    const promise = (async () => {
+      const s = getSession();
+      await ensurePipelineResolved(s);
+      const columns = await listColumns(scenarioContext(s), connectionGuid, databaseName, schema, table);
+      columnsCache.set(key, columns);
+      persistSchemaCaches();
+      return columns;
+    })();
+    columnsInFlight.set(key, promise);
+    try {
+      return await promise;
+    } finally {
+      if (columnsInFlight.get(key) === promise) columnsInFlight.delete(key);
+    }
   };
 
   const panelServices: PanelServices = {
@@ -340,13 +393,13 @@ export function activate(context: vscode.ExtensionContext): void {
       const columns = await getColumns(connectionGuid, databaseName, schema, table);
       const usable = columns.filter((c) => !UNSELECTABLE_COLUMN_TYPES.has(c.dataType.toLowerCase()));
       if (usable.length > 0 && usable.length < columns.length) {
-        const list = usable.map((c) => `[${c.name}]`).join(', ');
-        return `SELECT TOP 100 ${list} FROM [${schema}].[${table}]`;
+        const list = usable.map((c) => sqlIdentifier(c.name)).join(', ');
+        return `SELECT TOP 100 ${list} FROM ${sqlIdentifier(schema)}.${sqlIdentifier(table)}`;
       }
     } catch {
       // Fall through — the column-exclusion is a convenience, never a precondition to querying.
     }
-    return `SELECT TOP 100 * FROM [${schema}].[${table}]`;
+    return `SELECT TOP 100 * FROM ${sqlIdentifier(schema)}.${sqlIdentifier(table)}`;
   };
 
   context.subscriptions.push(
@@ -382,7 +435,7 @@ export function activate(context: vscode.ExtensionContext): void {
       SqlPanel.current?.prefillQuery(
         connectionGuid,
         databaseName,
-        `SELECT TOP 100 * FROM [${schemaName}].[${tableName}]`,
+        `SELECT TOP 100 * FROM ${sqlIdentifier(schemaName)}.${sqlIdentifier(tableName)}`,
       );
       const refined = await buildTableQuery(connectionGuid, databaseName, schemaName, tableName);
       SqlPanel.current?.prefillQuery(connectionGuid, databaseName, refined);
@@ -423,7 +476,13 @@ export function activate(context: vscode.ExtensionContext): void {
       await switchToTenant(picked.tenant.alias);
     }),
     vscode.commands.registerCommand('gatepulse.addTenant', async () => {
-      const existing = readTenants();
+      // Raw, not readTenants(): the duplicate-alias check should also catch a malformed entry that
+      // already has this alias, and the write-back below must preserve every existing entry as-is
+      // (including malformed ones still being edited by hand) rather than dropping them.
+      const existingRaw = readRawTenants();
+      const existingAliases = existingRaw
+        .map((t) => (t && typeof t === 'object' ? (t as TenantEntry).alias : undefined))
+        .filter((a): a is string => typeof a === 'string');
       // ignoreFocusOut: renseigner un tenantId/workspaceId implique presque toujours d'aller le
       // copier ailleurs (portail Azure, Fabric) — sans ça, la boîte se fermait dès qu'on changeait
       // de fenêtre et il fallait tout recommencer depuis l'alias.
@@ -435,7 +494,7 @@ export function activate(context: vscode.ExtensionContext): void {
           validateInput: (v) => {
             const trimmed = v.trim();
             if (!trimmed) return 'Alias requis';
-            if (existing.some((t) => t.alias.toLowerCase() === trimmed.toLowerCase()))
+            if (existingAliases.some((a) => a.toLowerCase() === trimmed.toLowerCase()))
               return `L'alias "${trimmed}" existe déjà`;
             return null;
           },
@@ -463,7 +522,7 @@ export function activate(context: vscode.ExtensionContext): void {
       // Global, jamais Workspace : GatePulse s'utilise sans dossier ouvert (V1-SCOPE.md §2).
       await vscode.workspace
         .getConfiguration('gatepulse')
-        .update('tenants', [...existing, { alias, tenantId, workspaceId }], vscode.ConfigurationTarget.Global);
+        .update('tenants', [...existingRaw, { alias, tenantId, workspaceId }], vscode.ConfigurationTarget.Global);
       await context.globalState.update(ACTIVE_TENANT_KEY, alias);
       invalidateSession();
     }),

@@ -142,6 +142,15 @@ function sqlStringLiteral(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
+/** `]` in a bracketed T-SQL identifier (SQL Server quoted identifiers allow almost anything) must
+ *  be doubled or it closes the identifier early — turning `[${name}]` built without escaping into
+ *  arbitrary SQL. These names come from our own discovery queries, not raw user input, but the
+ *  query they feed ("Select Top 100 Rows") is one click away from running via the history panel's
+ *  ▶ button — escaping costs nothing and closes the gap either way. */
+export function sqlIdentifier(value: string): string {
+  return `[${value.replace(/]/g, ']]')}]`;
+}
+
 /** Lists one table/view's columns, for the sidebar's schema tree — lazy, one table at a time (never
  *  all tables' columns up front: that would be one pipeline run per table for nothing).  */
 export async function listColumns(

@@ -104,7 +104,15 @@ export class SqlPanel {
       this.controller?.abort();
       SqlPanel.current = undefined;
     });
-    panel.webview.onDidReceiveMessage((m: FromWebview) => void this.onMessage(m));
+    panel.webview.onDidReceiveMessage((m: FromWebview) =>
+      // onMessage's own handlers already catch what they expect to fail (listDatabases, run...);
+      // this is the backstop for anything that doesn't — an unhandled rejection here would
+      // otherwise vanish silently instead of surfacing anywhere a user could see it.
+      this.onMessage(m).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        this.channel.appendLine(`[panel] unhandled error handling "${m.type}": ${message}`);
+      }),
+    );
   }
 
   /** Prefills the editor from outside (schema-tree table click) — 'ready' flushes this if the
@@ -246,8 +254,16 @@ export class SqlPanel {
       filters: { CSV: ['csv'] },
     });
     if (!uri) return;
-    fs.writeFileSync(uri.fsPath, toCsv(m.columns, m.rows), 'utf8');
-    void vscode.window.showInformationMessage(`GatePulse : export écrit dans ${uri.fsPath}`);
+    try {
+      await fs.promises.writeFile(uri.fsPath, toCsv(m.columns, m.rows), 'utf8');
+      void vscode.window.showInformationMessage(`GatePulse : export écrit dans ${uri.fsPath}`);
+    } catch (err) {
+      // A locked/read-only target (e.g. the CSV still open in Excel) used to throw synchronously
+      // and vanish — the write is now async and its failure is surfaced explicitly.
+      void vscode.window.showErrorMessage(
+        `GatePulse : échec de l'export CSV vers ${uri.fsPath} — ${(err as Error).message}`,
+      );
+    }
   }
 
   private async execute(m: Extract<FromWebview, { type: 'run' }>): Promise<void> {
@@ -415,8 +431,13 @@ export class SqlPanel {
 
 function csvCell(v: unknown): string {
   if (v === null || v === undefined) return '';
-  const s = typeof v === 'object' ? JSON.stringify(v) : String(v);
-  return /["\n,]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  let s = typeof v === 'object' ? JSON.stringify(v) : String(v);
+  // Formula injection: Excel/LibreOffice/Sheets can interpret a cell starting with =, +, -, @, a
+  // tab or a CR as a formula when the CSV is later opened — a query result column isn't something
+  // GatePulse controls the content of. Prefixing a single quote is Excel's own "force text" escape;
+  // it's visible but harmless, and cheaper than rejecting/altering the exported value otherwise.
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+  return /["\n,\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 function toCsv(columns: string[], rows: Record<string, unknown>[]): string {

@@ -77,6 +77,29 @@ interface RequestOptions {
 
 const MAX_429_RETRIES = 5;
 
+/** Hard ceiling on one HTTP call, independent of cfg.timeoutMs (which only bounds the job-status
+ *  poll loop). A dead gateway or a black-holed connection would otherwise hang `fetch()` forever. */
+const HTTP_REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * Only follows a `continuationUri` that is actually on the configured API origin. The previous
+ * `startsWith(apiBaseUrl)` check was a bare string prefix: it would accept
+ * "https://api.fabric.microsoft.com.evil.com/..." or "https://api.fabric.microsoft.com@evil.com/...",
+ * both of which pass a prefix test but resolve to a different host — which would receive this
+ * client's bearer token on the next paginated request.
+ */
+function sameOriginPath(candidate: string | undefined, apiBaseUrl: string): string | undefined {
+  if (!candidate) return undefined;
+  try {
+    const base = new URL(apiBaseUrl);
+    const next = new URL(candidate, apiBaseUrl);
+    if (next.origin !== base.origin) return undefined;
+    return `${next.pathname}${next.search}`;
+  } catch {
+    return undefined;
+  }
+}
+
 export class FabricClient {
   constructor(
     private readonly cfg: GatePulseConfig,
@@ -241,9 +264,7 @@ export class FabricClient {
         { label, expected: [200] },
       );
       out.push(...(res.body.value ?? []));
-      const next: string | undefined = res.body.continuationUri;
-      apiPath =
-        next && next.startsWith(this.cfg.apiBaseUrl) ? next.slice(this.cfg.apiBaseUrl.length) : undefined;
+      apiPath = sameOriginPath(res.body.continuationUri, this.cfg.apiBaseUrl);
       page++;
     }
     return out;
@@ -311,8 +332,10 @@ export class FabricClient {
   /** Long-running operation: poll /v1/operations/{id} then fetch /result. */
   private async waitForOperation(accepted: HttpResult<unknown>): Promise<unknown> {
     const operationId = accepted.headers['x-ms-operation-id'];
-    if (!operationId)
-      throw new GatePulseError('unexpected', 'LRO accepted without x-ms-operation-id header', {
+    // The id is interpolated straight into a URL path below — a sanity check on its shape costs
+    // nothing and rules out a malformed/hostile header value steering the request elsewhere.
+    if (!operationId || !/^[A-Za-z0-9-]+$/.test(operationId))
+      throw new GatePulseError('unexpected', 'LRO accepted without a usable x-ms-operation-id header', {
         raw: accepted.headers,
       });
     let delay = (Number(accepted.headers['retry-after']) || 2) * 1000;
@@ -352,22 +375,43 @@ export class FabricClient {
       const token = await this.getToken();
       const started = performance.now();
       let response: Response;
+      // Combine the caller's cancellation signal with a hard per-request timeout: without this, a
+      // connection that never responds (dead gateway, black-holed network) hangs forever — nothing
+      // upstream bounds a bare `fetch()` on its own, and cfg.timeoutMs only governs the job-status
+      // poll loop, not an individual HTTP call.
+      const requestController = new AbortController();
+      const timeoutTimer = setTimeout(() => requestController.abort(), HTTP_REQUEST_TIMEOUT_MS);
+      const onCallerAbort = () => requestController.abort();
+      opts.signal?.addEventListener('abort', onCallerAbort, { once: true });
       try {
-        response = await fetch(url, {
-          method,
-          headers: {
-            Authorization: `Bearer ${token}`,
-            ...(opts.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-          },
-          body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
-          signal: opts.signal,
-        });
-      } catch (err) {
-        if ((err as Error).name === 'AbortError') throw err;
-        throw new GatePulseError(
-          'network',
-          `${opts.label}: ${method} ${apiPath} failed: ${(err as Error).message}`,
-        );
+        try {
+          response = await fetch(url, {
+            method,
+            headers: {
+              Authorization: `Bearer ${token}`,
+              ...(opts.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+            },
+            body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+            signal: requestController.signal,
+          });
+        } catch (err) {
+          if ((err as Error).name === 'AbortError') {
+            // Distinguish a real user cancellation (rethrown as-is — callers check err.name) from
+            // this request's own timeout firing.
+            if (opts.signal?.aborted) throw err;
+            throw new GatePulseError(
+              'network',
+              `${opts.label}: ${method} ${apiPath} timed out after ${HTTP_REQUEST_TIMEOUT_MS} ms with no response`,
+            );
+          }
+          throw new GatePulseError(
+            'network',
+            `${opts.label}: ${method} ${apiPath} failed: ${(err as Error).message}`,
+          );
+        }
+      } finally {
+        clearTimeout(timeoutTimer);
+        opts.signal?.removeEventListener('abort', onCallerAbort);
       }
       const durationMs = Math.round(performance.now() - started);
       const headers: Record<string, string> = {};

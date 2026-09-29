@@ -157,7 +157,8 @@
         "gatepulse.tenants": {
           "type": "array",
           "default": [],
-          "description": "Tenants/workspaces available in the panel and in \"GatePulse: Switch Tenant\". No project/repo needed — GatePulse is used standalone, like the mssql extension: this lives in User Settings by default, not tied to a workspace.",
+          "scope": "application",
+          "description": "Tenants/workspaces available in the panel and in \"GatePulse: Switch Tenant\". No project/repo needed — GatePulse is used standalone, like the mssql extension: User Settings only (\"application\" scope) — a workspace's .vscode/settings.json cannot override this, so an untrusted repo can't silently redirect queries to a different tenant/workspace.",
           "items": {
             "type": "object",
             "required": [
@@ -200,7 +201,8 @@
         "gatepulse.clientId": {
           "type": "string",
           "default": "",
-          "description": "Optional. Leave empty to sign in with Microsoft's first-party public client (same as Azure CLI / FabricPulse). Set only if you have your own app registration allowed for user sign-in. Overridden per tenant by gatepulse.tenants[].clientId."
+          "scope": "application",
+          "description": "Optional. Leave empty to sign in with Microsoft's first-party public client (same as Azure CLI / FabricPulse). Set only if you have your own app registration allowed for user sign-in. Overridden per tenant by gatepulse.tenants[].clientId. User Settings only (\"application\" scope) — a workspace can't point sign-in at an app registration of its choosing."
         },
         "gatepulse.authFlow": {
           "type": "string",
@@ -221,7 +223,8 @@
           "default": [
             "https://api.fabric.microsoft.com/.default"
           ],
-          "description": "Token scopes. The first-party client (empty clientId) only supports .default."
+          "scope": "application",
+          "description": "Token scopes. The first-party client (empty clientId) only supports .default. User Settings only (\"application\" scope) — a workspace can't redirect the sign-in consent to a different resource."
         },
         "gatepulse.pollIntervalMs": {
           "type": "number",
@@ -274,7 +277,8 @@
         "gatepulse.logDirectory": {
           "type": "string",
           "default": "",
-          "description": "Folder for JSONL logs and reports. Empty = extension global storage."
+          "scope": "application",
+          "description": "Folder for JSONL logs and reports (query text/metadata and sample result rows are written here). Empty = extension global storage. User Settings only (\"application\" scope) — a workspace can't redirect these logs to, say, a synced folder."
         },
         "gatepulse.cacheSchemaMetadata": {
           "type": "boolean",

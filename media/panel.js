@@ -99,6 +99,18 @@
   let timer = 0;
   let startedAt = 0;
 
+  // Tracks which tenant the fields currently reflect, so a real tenant switch (dropdown, tree, "+
+  // Tenant") can force-refresh connectionGuid/databaseName from the new tenant's own defaults —
+  // leaving the previous tenant's connection in place used to silently send queries to the wrong
+  // workspace. `tenantInitialized` distinguishes that from the panel's very first 'init', where
+  // whatever vscode.getState() already restored should win instead.
+  let currentTenantAlias = null;
+  let tenantInitialized = false;
+  // Set when a history entry belonging to a different tenant is loaded/run: switching tenant first
+  // (posted below) triggers a fresh 'init', which then applies this entry's own values instead of
+  // the new tenant's stored defaults.
+  let pendingHistoryAction = null;
+
   // ---------------------------------------------------------------- actions
   const conn = () => ({ connectionGuid: inputs.connectionGuid.value, databaseName: inputs.databaseName.value });
   function tryRun() {
@@ -290,16 +302,49 @@
     const m = event.data;
     switch (m.type) {
       case 'init': {
-        if (!inputs.connectionGuid.value) inputs.connectionGuid.value = m.defaults.connectionGuid || '';
-        if (!inputs.databaseName.value) inputs.databaseName.value = m.defaults.databaseName || '';
+        const isSwitch = tenantInitialized && m.activeTenantAlias !== currentTenantAlias;
+        if (isSwitch) {
+          // A real tenant switch: this tenant's own connection/database replace whatever was left
+          // typed for the previous one — otherwise a stale connectionGuid gets run through the new
+          // tenant's pipeline without any indication anything changed.
+          inputs.connectionGuid.value = m.defaults.connectionGuid || '';
+          inputs.databaseName.value = m.defaults.databaseName || '';
+        } else {
+          // First load: keep whatever vscode.getState() already restored for this tenant, falling
+          // back to its stored defaults only if nothing was persisted.
+          if (!inputs.connectionGuid.value) inputs.connectionGuid.value = m.defaults.connectionGuid || '';
+          if (!inputs.databaseName.value) inputs.databaseName.value = m.defaults.databaseName || '';
+        }
+        tenantInitialized = true;
+        currentTenantAlias = m.activeTenantAlias;
+
         renderTenants(m.tenants, m.activeTenantAlias);
         const problems = m.configProblems.filter((p) => !p.startsWith('No tenant configured'));
         const banner = $('configProblems');
         banner.classList.toggle('hidden', problems.length === 0);
         banner.textContent = problems.length ? `Configuration incomplète : ${problems.join(' • ')}` : '';
         renderHistory(m.history || []);
-        requestDatabases(false); // uses the panel-side cache if this connection was already resolved this session
-        warmTables();
+
+        if (pendingHistoryAction) {
+          // Resuming a history entry that belonged to a different tenant: its own connection/
+          // database/query replace whatever was just applied above, tenant-switch or not.
+          const { entry, execute } = pendingHistoryAction;
+          pendingHistoryAction = null;
+          const matched = m.activeTenantAlias === entry.tenantAlias;
+          inputs.connectionGuid.value = entry.connectionGuid;
+          inputs.databaseName.value = entry.databaseName;
+          cm.setValue(entry.query);
+          persist();
+          requestDatabases(false);
+          warmTables();
+          // Only auto-run if the switch actually landed on the entry's tenant (e.g. not deleted
+          // since) — loading without running is always safe, running against the wrong tenant isn't.
+          if (execute && matched) run();
+        } else {
+          if (isSwitch) persist();
+          requestDatabases(false); // uses the panel-side cache if this connection was already resolved this session
+          warmTables();
+        }
         break;
       }
       case 'setConnectionGuid':
@@ -329,7 +374,10 @@
       case 'tables': {
         const key = `${m.connectionGuid}:${m.databaseName}`;
         if (key === schemaKey) tablesForSchema = m.objects;
-        tablesInFlightKey = null;
+        // Only clear the in-flight marker if this response is for the request it was tracking — a
+        // stale response for a key the schema already moved on from must not clear the marker for
+        // whatever *newer* request is now actually in flight, or that one gets fired a second time.
+        if (tablesInFlightKey === key) tablesInFlightKey = null;
         const remaining = [];
         for (const p of pendingTablesResolvers) {
           if (p.connectionGuid === m.connectionGuid && p.databaseName === m.databaseName) p.resolve(m.objects);
@@ -388,7 +436,7 @@
     section.classList.toggle('hidden', entries.length === 0);
     $('historyList').replaceChildren(
       ...entries.map((h) => {
-        const load = () => {
+        const applyEntry = () => {
           inputs.connectionGuid.value = h.connectionGuid;
           inputs.databaseName.value = h.databaseName;
           cm.setValue(h.query);
@@ -396,9 +444,22 @@
           requestDatabases(false);
           warmTables();
         };
+        // A history entry belongs to whichever tenant was active when it ran — loading its
+        // connectionGuid/databaseName as-is while a *different* tenant is active would query the
+        // right-looking connection through the wrong tenant's pipeline/workspace/credentials.
+        // Switch first when needed; 'init' picks pendingHistoryAction back up once the switch lands.
+        const load = (execute) => {
+          if (h.tenantAlias && h.tenantAlias !== currentTenantAlias) {
+            pendingHistoryAction = { entry: h, execute };
+            vscode.postMessage({ type: 'switchTenant', alias: h.tenantAlias });
+            return;
+          }
+          applyEntry();
+          if (execute) run();
+        };
         return el(
           'li',
-          { className: 'history-item', onclick: load, title: "Charger dans l'éditeur sans exécuter" },
+          { className: 'history-item', onclick: () => load(false), title: "Charger dans l'éditeur sans exécuter" },
           el(
             'div',
             { className: 'history-text' },
@@ -418,8 +479,7 @@
               title: 'Charger et exécuter',
               onclick: (e) => {
                 e.stopPropagation();
-                load();
-                run();
+                load(true);
               },
             },
             icon('play'),
