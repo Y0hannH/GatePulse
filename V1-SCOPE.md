@@ -9,7 +9,7 @@ issues/tickets de suivi.
 Le PoC (v0.1.0) a démontré la faisabilité technique : exécuter du SQL ad hoc sur une base on-prem /
 IP-filtrée via un pipeline Fabric générique (Lookup/Script + connexion gateway), piloté uniquement
 par l'API REST Fabric. Les 4 points de risque du brief sont mesurés et pour l'essentiel confirmés
-(voir `README.md` §6 et §5) : plafond Lookup à 5000 lignes (troncature silencieuse), limite de
+(voir `docs/POC-VALIDATION.md` §6 et §5) : plafond Lookup à 5000 lignes (troncature silencieuse), limite de
 sortie à 4 194 304 octets, format des paramètres, point d'API de résultat.
 
 GatePulse avait été choisi comme pilote de `pulse-shared` (auth) précisément parce que
@@ -78,7 +78,7 @@ swap) sort du produit livré — il a rempli son rôle de preuve de faisabilité
   (`pipelineRunner`, `fabricClient`, `provision`, et le nouveau module `runQuery`) — sans dépendre
   du CLI figé.
 - Le CLI garde son utilité de fait comme historique de mesure (résultats déjà obtenus, cf.
-  `README.md` §6) même s'il sort du produit livré.
+  `docs/POC-VALIDATION.md` §6) même s'il sort du produit livré.
 
 ## Nouvelles exigences V1
 
@@ -141,7 +141,7 @@ debug ou pipeline provisionné à la main). `checkConfig` (`config.ts`) ne doit 
 `'config'` (réglages manquants/invalides statiquement), cohérent avec la convention déjà posée dans
 `CLAUDE.md` (« un cas dans la taxonomie plutôt qu'un message ad hoc »).
 
-**Risques non résolus, à vérifier empiriquement (même esprit que README §6)** :
+**Risques non résolus, à vérifier empiriquement (même esprit que docs/POC-VALIDATION.md §6)** :
 | Sujet | Hypothèse | À vérifier |
 |---|---|---|
 | Unicité du `displayName` | Fabric n'impose probablement pas l'unicité des noms d'items dans un workspace | Si deux créations quasi simultanées passent toutes les deux l'étape 3, le cas "plusieurs matches" (étape 4) doit se déclencher en pratique — à tester avec deux sessions concurrentes |
@@ -330,7 +330,7 @@ l'utilisateur dans le picker, pas de sauvegarde automatique.
 **Risques à vérifier empiriquement** :
 | Sujet | Hypothèse | À vérifier |
 |---|---|---|
-| Endpoint et forme exacte | `GET /v1/connections` existe et retourne `connectivityType`/`connectionDetails.type` sous cette forme | Non testé contre un vrai tenant Fabric — à confronter à l'implémentation dès le premier appel réel, comme les hypothèses du README §6 |
+| Endpoint et forme exacte | `GET /v1/connections` existe et retourne `connectivityType`/`connectionDetails.type` sous cette forme | Non testé contre un vrai tenant Fabric — à confronter à l'implémentation dès le premier appel réel, comme les hypothèses de `docs/POC-VALIDATION.md` §6 |
 | Portée du listing | La liste retournée par `/v1/connections` est bien scoping tenant/utilisateur et pas trop large (toutes les connexions de l'organisation, pas seulement celles utiles à GatePulse) | Si trop large en pratique, envisager `/v1/gateways` puis connexions par gateway — non conçu ici, à réévaluer si le filtrage `connectivityType`/`type` ne suffit pas |
 | Droit de lister vs droit d'utiliser | Un utilisateur peut voir une connexion dans la liste sans avoir le droit de l'utiliser dans un pipeline | Le run lui-même reste la seule vérité (comme aujourd'hui, cf. `connection` dans `ErrorKind`) — le picker n'est qu'un confort, jamais une garantie |
 

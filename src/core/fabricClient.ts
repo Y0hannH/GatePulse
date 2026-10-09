@@ -245,7 +245,7 @@ export class FabricClient {
    * GET /v1/connections — tenant-wide, not scoped to a workspace: a gateway connection is
    * referenced by GUID from a pipeline, not listed as a workspace item. Used to let the user pick
    * a connection instead of typing its GUID — see V1-SCOPE.md §3 (endpoint shape unconfirmed
-   * against a real tenant, same spirit as the hypotheses in README §6).
+   * against a real tenant, same spirit as the hypotheses in docs/POC-VALIDATION.md §6).
    */
   async listConnections(): Promise<FabricConnection[]> {
     return this.paginate<FabricConnection>('/v1/connections', 'connection.list');
