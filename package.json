@@ -38,7 +38,7 @@
     "viewsWelcome": [
       {
         "view": "gatepulse.tenantsView",
-        "contents": "Aucun tenant configuré.\n\n[$(add) Ajouter un tenant](command:gatepulse.addTenant)\n\nUn tenant regroupe le tenantId Entra ID et le workspace Fabric où le pipeline SQL générique est provisionné automatiquement au premier run."
+        "contents": "No tenant configured.\n\n[$(add) Add a tenant](command:gatepulse.addTenant)\n\nA tenant groups the Entra ID tenant ID and the Fabric workspace where the generic SQL pipeline is provisioned automatically on first run."
       }
     ],
     "commands": [
@@ -93,6 +93,16 @@
         "command": "gatepulse.refreshConnections",
         "title": "GatePulse: Refresh Connections",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "gatepulse.addDatabase",
+        "title": "GatePulse: Add Database to Tenant",
+        "icon": "$(add)"
+      },
+      {
+        "command": "gatepulse.removeDatabase",
+        "title": "GatePulse: Remove Manually Added Database",
+        "icon": "$(trash)"
       }
     ],
     "menus": {
@@ -103,6 +113,10 @@
         },
         {
           "command": "gatepulse.selectTop100",
+          "when": "false"
+        },
+        {
+          "command": "gatepulse.removeDatabase",
           "when": "false"
         }
       ],
@@ -147,6 +161,21 @@
         {
           "command": "gatepulse.selectTop100",
           "when": "view == gatepulse.tenantsView && (viewItem == table || viewItem == view)",
+          "group": "1_actions"
+        },
+        {
+          "command": "gatepulse.addDatabase",
+          "when": "view == gatepulse.tenantsView && viewItem =~ /^tenant-/",
+          "group": "inline@1"
+        },
+        {
+          "command": "gatepulse.addDatabase",
+          "when": "view == gatepulse.tenantsView && viewItem =~ /^tenant-/",
+          "group": "1_actions"
+        },
+        {
+          "command": "gatepulse.removeDatabase",
+          "when": "view == gatepulse.tenantsView && viewItem == database-manual",
           "group": "1_actions"
         }
       ]
@@ -194,6 +223,13 @@
               "databaseName": {
                 "type": "string",
                 "description": "Optional: database name pre-filled in the panel."
+              },
+              "extraDatabases": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Optional: databases reachable through this tenant's default connection that sys.databases doesn't list for your login. Shown in the sidebar tree and the panel's database list. Easiest to add with the + button on the tenant row."
               }
             }
           }
@@ -360,6 +396,11 @@
           "type": "string",
           "default": "SELECT TOP ({{n}}) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS i, REPLICATE(CAST('x' AS varchar(max)), 4000) AS pad FROM sys.all_objects a CROSS JOIN sys.all_objects b",
           "description": "Query returning {{n}} wide rows for the size test. T-SQL by default."
+        },
+        "gatepulse.autoConvertUnsupportedColumns": {
+          "type": "boolean",
+          "default": true,
+          "description": "When a query fails because a column has a type the pipeline can't transfer (binary, xml, geography, sql_variant...), re-run it once with those columns cast to text, and say so in the result. Needs one extra describe run. Turn off to get the plain error instead."
         }
       }
     }
@@ -373,7 +414,7 @@
     "lint": "eslint .",
     "format": "prettier --write --no-error-on-unmatched-pattern \"src/**/*.{ts,tsx}\" \"test/**/*.ts\" \"*.js\"",
     "format:check": "prettier --check --no-error-on-unmatched-pattern \"src/**/*.{ts,tsx}\" \"test/**/*.ts\" \"*.js\"",
-    "test": "tsx test/mock-selftest.ts && tsx test/provision-selftest.ts",
+    "test": "tsx test/mock-selftest.ts && tsx test/provision-selftest.ts && tsx test/convert-selftest.ts",
     "vsix": "vsce package --no-dependencies",
     "cli": "node dist/cli.js",
     "validate": "node dist/cli.js all"

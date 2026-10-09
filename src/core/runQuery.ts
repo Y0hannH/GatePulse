@@ -27,17 +27,47 @@ function aggregateVerdicts(checks: ValidationCheck[]): Partial<Record<Validation
  * param binding, ...), this just wraps one run into the same `ScenarioReport` shape the panel and
  * `saveReport` already consume, without any of the frozen P1-P4 machinery.
  */
-export async function runSingle(ctx: ScenarioContext, params: QueryParams): Promise<ScenarioReport> {
+export async function runSingle(
+  ctx: ScenarioContext,
+  params: QueryParams,
+  options: { autoConvertUnsupportedTypes?: boolean } = {},
+): Promise<ScenarioReport> {
   const log = ctx.logger.child({ scenario: 'single' });
   const startedAt = new Date();
   const t0 = performance.now();
   log.info('run.start', 'Query run started');
   const onProgress: ExecuteOptions['onProgress'] = ctx.onProgress;
-  const run = await ctx.runner.execute(params, {
-    signal: ctx.signal,
-    onProgress,
-    runLabel: `single-${randomUUID().slice(0, 6)}`,
-  });
+  const execute = (p: QueryParams) =>
+    ctx.runner.execute(p, {
+      signal: ctx.signal,
+      onProgress,
+      runLabel: `single-${randomUUID().slice(0, 6)}`,
+    });
+  let run = await execute(params);
+  if (!run.succeeded && run.error?.kind === 'unsupportedType' && options.autoConvertUnsupportedTypes) {
+    // The Lookup/Script transfer engine can't move some column types (binary, xml, spatial...).
+    // Rather than make the user hand-edit the SELECT, describe the result set, cast those columns
+    // to text and run once more — the conversion is announced in the result, never silent.
+    try {
+      const rewrite = await rewriteForUnsupportedTypes(ctx, params);
+      if (rewrite) {
+        log.info('run.retry', `Retrying with ${rewrite.converted.length} column(s) converted to text`);
+        const retry = await execute({ ...params, query: rewrite.query });
+        retry.checks.push({
+          point: 'P1',
+          name: 'COLUMN_CONVERSION',
+          status: 'WARN',
+          message: `Converted to text so they could be transferred: ${rewrite.converted
+            .map((c) => `${c.name} (${c.type})`)
+            .join(', ')}.`,
+        });
+        run = retry;
+      }
+    } catch (err) {
+      // Keep the original error — it is the accurate one if the rewrite itself could not be done.
+      log.warn('run.retry.failed', `Column conversion not possible: ${(err as Error).message}`);
+    }
+  }
   const wallClockMs = Math.round(performance.now() - t0);
   log.info('run.end', `Query run finished in ${(wallClockMs / 1000).toFixed(1)} s`);
   return {
@@ -149,6 +179,81 @@ function sqlStringLiteral(value: string): string {
  *  ▶ button — escaping costs nothing and closes the gap either way. */
 export function sqlIdentifier(value: string): string {
   return `[${value.replace(/]/g, ']]')}]`;
+}
+
+/**
+ * Types the Lookup/Script data-transfer engine can't move (real error: `DataTypeNotSupported` on a
+ * varbinary(max)). Each maps to a T-SQL expression producing text instead — NULL stays NULL.
+ * Binary is shown as hex, cut at 128 bytes: it is for eyeballing, not for round-tripping.
+ */
+const TEXT_CONVERSIONS: Record<string, (col: string) => string> = {
+  binary: (c) => `CONVERT(varchar(258), CAST(${c} AS varbinary(max)), 1)`,
+  varbinary: (c) => `CONVERT(varchar(258), CAST(${c} AS varbinary(max)), 1)`,
+  image: (c) => `CONVERT(varchar(258), CAST(${c} AS varbinary(max)), 1)`,
+  timestamp: (c) => `CONVERT(varchar(258), CAST(${c} AS varbinary(max)), 1)`,
+  rowversion: (c) => `CONVERT(varchar(258), CAST(${c} AS varbinary(max)), 1)`,
+  xml: (c) => `CAST(${c} AS nvarchar(max))`,
+  geography: (c) => `${c}.STAsText()`,
+  geometry: (c) => `${c}.STAsText()`,
+  hierarchyid: (c) => `${c}.ToString()`,
+  sql_variant: (c) => `CAST(${c} AS nvarchar(4000))`,
+};
+
+/** `[col]` + its SQL Server type → a text expression, or undefined when the type transfers fine. */
+export function convertedColumnExpression(column: string, dataType: string): string | undefined {
+  const base = dataType.split('(')[0].trim().toLowerCase();
+  return TEXT_CONVERSIONS[base]?.(column);
+}
+
+const SIMPLE_SELECT_STAR =
+  /^(\s*SELECT\s+(?:DISTINCT\s+)?(?:TOP\s*(?:\(\s*\d+\s*\)|\d+)(?:\s+PERCENT)?(?:\s+WITH\s+TIES)?\s+)?)\*(\s+FROM\b)/i;
+
+/**
+ * Builds a version of `params.query` where every column of a non-transferable type is cast to text.
+ * Uses `sys.dm_exec_describe_first_result_set` to learn the result's columns without running it
+ * (one extra pipeline run, only paid after an `unsupportedType` failure). `SELECT [TOP n] * FROM`
+ * gets its `*` replaced in place; anything else is wrapped as a derived table. Returns undefined
+ * when nothing needs converting; throws when the query can't be described or safely rewritten
+ * (CTE, duplicate/unnamed result columns...) — the caller then keeps the original error.
+ */
+export async function rewriteForUnsupportedTypes(
+  ctx: ScenarioContext,
+  params: QueryParams,
+): Promise<{ query: string; converted: { name: string; type: string }[] } | undefined> {
+  const original = params.query.trim().replace(/;+\s*$/, '');
+  if (/^\s*(WITH|EXEC|EXECUTE)\b/i.test(original)) {
+    throw new Error('queries starting with WITH / EXEC cannot be rewritten automatically');
+  }
+  const describe =
+    'SELECT name, system_type_name, error_message ' +
+    `FROM sys.dm_exec_describe_first_result_set(N${sqlStringLiteral(original)}, NULL, 0) ` +
+    'WHERE is_hidden = 0 ORDER BY column_ordinal';
+  const rows = await runDiscoveryQuery(ctx, { ...params, query: describe }, 'describe-result');
+  const errorMessage = rows.find((r) => r.error_message)?.error_message;
+  if (typeof errorMessage === 'string') throw new Error(errorMessage);
+  const columns = rows.map((r) => ({ name: r.name, type: String(r.system_type_name ?? '') }));
+  const names = columns.map((c) => c.name);
+  if (columns.length === 0 || names.some((n) => typeof n !== 'string' || !n)) {
+    throw new Error('result has unnamed columns');
+  }
+  if (new Set((names as string[]).map((n) => n.toLowerCase())).size !== names.length) {
+    throw new Error('result has duplicate column names');
+  }
+  const converted: { name: string; type: string }[] = [];
+  const list = columns
+    .map((c) => {
+      const id = sqlIdentifier(c.name as string);
+      const expr = convertedColumnExpression(id, c.type);
+      if (!expr) return id;
+      converted.push({ name: c.name as string, type: c.type });
+      return `${expr} AS ${id}`;
+    })
+    .join(', ');
+  if (converted.length === 0) return undefined;
+  const query = SIMPLE_SELECT_STAR.test(original)
+    ? original.replace(SIMPLE_SELECT_STAR, (_m, head: string, tail: string) => `${head}${list}${tail}`)
+    : `SELECT ${list} FROM (\n${original}\n) AS gp_src`;
+  return { query, converted };
 }
 
 /** Lists one table/view's columns, for the sidebar's schema tree — lazy, one table at a time (never

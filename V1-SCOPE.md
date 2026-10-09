@@ -523,6 +523,39 @@ priorité d'affichage change.
     (point 9) dès que la vérification des types revient — l'utilisateur voit tout de suite quelque
     chose plutôt que d'attendre l'aller-retour avant tout affichage.
 
+13. **Passe UI du 2026-10-09, demandes explicites de Yohann (après test manuel OK sur un vrai tenant).**
+    - **Interface 100 % en anglais** (panel, arbre, commandes, messages, `package.json`) — la doc du
+      repo reste en français. Remplace toute formulation française des points précédents.
+    - **Nom de la connexion partout où il n'y avait que le GUID.** Le champ « Connexion » du panel est
+      un menu déroulant de noms (`listConnections`) ; le GUID n'est saisi à la main que via « Enter a
+      GUID manually… » ou si la liste est indisponible. Le menu tenant affiche `alias · nom de la
+      connexion par défaut`, et la ligne tenant de l'arbre l'affiche en description. Les noms sont
+      mémorisés dans `globalState` (`gatepulse.connectionNames`, GUID → nom) pour pouvoir nommer la
+      connexion d'un tenant non actif, dont le token ne peut pas lister maintenant.
+    - **Base non listée : `gatepulse.tenants[].extraDatabases`.** Une base interrogeable mais absente de
+      `sys.databases` pour ce login s'ajoute via le bouton `+` de la ligne tenant (commande
+      `GatePulse: Add Database to Tenant`, `Global`) ; elle apparaît dans l'arbre (« added manually »,
+      retirable en clic droit) et dans la liste des bases du panel (si la connexion est celle par
+      défaut du tenant). Elle reste visible même si le listing des bases échoue.
+    - **Bloc rapport/timings supprimé** : plus de résumé (durée totale, métriques, chemin du rapport),
+      plus de section Diagnostics (annule le point 10 : rien à masquer puisqu'elle n'existe plus), plus
+      de durée dans l'historique ni dans l'en-tête des résultats. Reste : un indicateur « Running… »
+      pendant l'exécution, le bandeau d'alerte (troncature, binding, conversion) et l'erreur. Le modèle
+      de données (`ExecutionReport.checks`, rapport JSONL) ne change pas.
+    - **Types non supportés par le Lookup (`DataTypeNotSupported`) : conversion automatique.** Sur
+      échec `unsupportedType`, `runSingle` décrit le résultat (`sys.dm_exec_describe_first_result_set`,
+      un run de plus), caste les colonnes concernées en texte (binaire → hex tronqué à 128 octets, xml/
+      sql_variant → `nvarchar`, geography/geometry → `STAsText()`, hierarchyid → `ToString()`) et
+      relance une fois ; le panel l'annonce dans un bandeau. `SELECT [TOP n] * FROM` voit son `*`
+      remplacé sur place ; le reste est enveloppé en table dérivée. Refusé (erreur d'origine conservée)
+      pour les requêtes `WITH`/`EXEC` et les colonnes sans nom ou en double ; **limite connue** : un
+      `ORDER BY` sans `TOP` dans une requête enveloppée est rejeté par SQL Server. Réglage
+      `gatepulse.autoConvertUnsupportedColumns` (défaut `true`). « Select Top 100 Rows » (point 9) ne
+      *retire* plus ces colonnes : il les caste directement dans la liste générée, sans run en échec.
+      Couvert hors ligne par `test/convert-selftest.ts` (texte SQL généré, pas son exécution Fabric).
+    - **Refonte visuelle** : bandeau de contexte tenant · connexion · base, cartes arrondies, résultats
+      en carte avec lignes alternées, en-têtes collants.
+
 **E. Explicitement hors périmètre de ce point** (pour ne pas dériver) :
 - Multi-requêtes / multi-onglets simultanés — un seul éditeur de requête, comme aujourd'hui.
 - Requêtes nommées/favoris au-delà du simple historique — piste V2 si le besoin se confirme à l'usage.

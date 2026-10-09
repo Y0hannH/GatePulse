@@ -10,45 +10,40 @@
     databaseName: /** @type {HTMLInputElement} */ ($('databaseName')),
   };
   const tenantSelect = /** @type {HTMLSelectElement} */ ($('tenantSelect'));
+  const connectionSelect = /** @type {HTMLSelectElement} */ ($('connectionSelect'));
 
-  const PHASES = {
-    auth: 'Authentification',
-    triggering: 'Déclenchement du job',
-    waiting: 'Attente de complétion',
-    fetchingResult: 'Récupération du résultat',
-    done: 'Terminé',
-    failed: 'Échec',
-  };
   const ERROR_TITLES = {
-    config: ['Configuration invalide', 'Vérifier les paramètres GatePulse.'],
-    auth: ["Échec d'authentification", 'Vérifier tenantId/clientId, la plateforme de redirection de l’app Entra, ou relancer le sign-in.'],
-    permission: ['Permissions insuffisantes', 'Le compte doit avoir un rôle sur le workspace et les scopes Fabric consentis.'],
-    trigger: ['Échec du déclenchement du pipeline', 'Voir errorCode ; vérifier workspaceId/pipelineId.'],
-    rateLimit: ['Limitation de débit Fabric (429)', 'Trop de requêtes / jobs simultanés.'],
-    timeout: ['Timeout', 'Le job n’a pas terminé dans le délai ; il a été annulé.'],
-    cancelled: ['Annulé', ''],
-    deduped: ['Job dédupliqué par Fabric', 'Fabric n’a pas exécuté ce job (statut Deduped).'],
-    sql: ['Erreur SQL', 'La base a rejeté la requête.'],
-    unsupportedType: ['Type de colonne non supporté', 'Une colonne du SELECT a un type que le pipeline ne sait pas transférer (binaire, XML, geography, sql_variant...) — retire-la explicitement du SELECT (le nom de la colonne est dans le message ci-dessous) plutôt que d’utiliser SELECT *.'],
-    resultTooLarge: ['Résultat trop volumineux (> 4 Mo)', 'Le Lookup refuse les résultats de plus de 4 Mo : réduire les colonnes (éviter SELECT *) ou ajouter TOP / WHERE.'],
-    connection: ['Erreur de connexion / gateway', 'GUID de connexion, gateway, identifiants ou base inaccessibles.'],
-    pipelineFailed: ['Échec du pipeline', 'Erreur non classée : voir le message brut.'],
-    resultRetrieval: ['Résultat non récupérable via API', 'Le job a tourné mais la sortie du Lookup n’a pas pu être lue.'],
-    provisioning: ['Pipeline générique non utilisable', 'Un pipeline du bon nom existe dans ce workspace mais n’est pas valide (paramètres manquants, ou pas d’activité Lookup/Script) : le corriger ou le renommer à la main.'],
-    network: ['Erreur réseau', ''],
-    unexpected: ['Erreur inattendue', ''],
+    config: ['Invalid configuration', 'Check the GatePulse settings.'],
+    auth: ['Sign-in failed', 'Check tenantId/clientId and the Entra app redirect platform, or sign in again.'],
+    permission: ['Insufficient permissions', 'The account needs a role on the workspace and the Fabric scopes consented.'],
+    trigger: ['Could not start the pipeline', 'Check workspaceId/pipelineId (see errorCode).'],
+    rateLimit: ['Fabric rate limit (429)', 'Too many requests or concurrent jobs.'],
+    timeout: ['Timeout', 'The job did not finish in time and was cancelled.'],
+    cancelled: ['Cancelled', ''],
+    deduped: ['Job deduplicated by Fabric', 'Fabric did not run this job (status Deduped).'],
+    sql: ['SQL error', 'The database rejected the query.'],
+    unsupportedType: ['Column type not supported', 'A selected column has a type the pipeline cannot transfer (binary, XML, geography, sql_variant...) and it could not be converted automatically. Cast it to text in the SELECT, or leave it out.'],
+    resultTooLarge: ['Result too large (> 4 MB)', 'The Lookup refuses results over 4 MB: select fewer columns (avoid SELECT *) or add TOP / WHERE.'],
+    connection: ['Connection / gateway error', 'Connection GUID, gateway, credentials or database unreachable.'],
+    pipelineFailed: ['Pipeline failed', 'Unclassified error: see the raw message.'],
+    resultRetrieval: ['Result could not be retrieved', 'The job ran but the Lookup output could not be read through the API.'],
+    provisioning: ['Generic pipeline unusable', 'A pipeline with the expected name exists in this workspace but is not valid (missing parameters, or no Lookup/Script activity): fix or rename it by hand.'],
+    network: ['Network error', ''],
+    unexpected: ['Unexpected error', ''],
   };
-  /** Reformulates the checks that matter day-to-day (V1-SCOPE.md §4.B) — everything else stays in Diagnostics. */
+  /** Checks worth a banner in daily use (V1-SCOPE.md §4.B) — everything else stays out of the UI. */
   const ALERT_MESSAGES = {
-    SILENT_FAILURE: (c) => `${activityLabel(c)} : échec silencieux détecté — ${c.message.replace(/^\[.*?\]\s*/, '')}`,
-    ROW_CAP: (c) => `${activityLabel(c)} : le résultat semble tronqué à 5000 lignes, sans erreur remontée par Fabric — ajouter TOP/WHERE ou vérifier le nombre de lignes attendu.`,
-    PARAM_BINDING: (c) => `${activityLabel(c)} : la requête envoyée ne correspond pas à celle exécutée par le pipeline (valeurs par défaut probablement utilisées).`,
-    CONNECTION_RESOLUTION: (c) => `${activityLabel(c)} : le pipeline a utilisé une connexion différente de celle sélectionnée.`,
-    DATABASE_BINDING: (c) => `${activityLabel(c)} : la base sélectionnée n’a pas été retrouvée dans l’exécution — vérifier qu’elle est bien prise en compte.`,
+    SILENT_FAILURE: (c) => `${activityLabel(c)}silent failure detected — ${c.message.replace(/^\[.*?\]\s*/, '')}`,
+    ROW_CAP: (c) => `${activityLabel(c)}the result looks truncated at 5,000 rows without any error from Fabric — add TOP/WHERE or check the expected row count.`,
+    PARAM_BINDING: (c) => `${activityLabel(c)}the query sent does not match the one the pipeline ran (default values were probably used).`,
+    CONNECTION_RESOLUTION: (c) => `${activityLabel(c)}the pipeline used a different connection than the one selected.`,
+    DATABASE_BINDING: (c) => `${activityLabel(c)}the selected database was not found in the run — check that it was applied.`,
+    COLUMN_CONVERSION: (c) => c.message,
   };
   function activityLabel(c) {
-    return c.activity ? `[${c.activity}]` : 'Exécution';
+    return c.activity ? `[${c.activity}] ` : '';
   }
+  const MANUAL = '__manual__';
 
   // ---------------------------------------------------------------- state
   const saved = vscode.getState() || {};
@@ -119,7 +114,18 @@
   const run = () => vscode.postMessage({ type: 'run', ...conn(), query: cm.getValue() });
   $('run').addEventListener('click', run);
   $('cancel').addEventListener('click', () => vscode.postMessage({ type: 'cancel' }));
-  $('pickConnection').addEventListener('click', () => vscode.postMessage({ type: 'pickConnection' }));
+  $('refreshConnections').addEventListener('click', () => vscode.postMessage({ type: 'refreshConnections' }));
+  connectionSelect.addEventListener('change', () => {
+    if (connectionSelect.value === MANUAL) {
+      manualMode = true;
+      syncConnectionUI();
+      inputs.connectionGuid.focus();
+      return;
+    }
+    manualMode = false;
+    inputs.connectionGuid.value = connectionSelect.value;
+    onConnectionChanged();
+  });
   $('showLogs').addEventListener('click', (e) => (e.preventDefault(), vscode.postMessage({ type: 'showLogs' })));
   $('openSettings').addEventListener('click', (e) => (e.preventDefault(), vscode.postMessage({ type: 'openSettings' })));
   tenantSelect.addEventListener('change', () => vscode.postMessage({ type: 'switchTenant', alias: tenantSelect.value }));
@@ -127,12 +133,37 @@
 
   // ---------------------------------------------------------------- database picker
   // Fired on blur/commit (not every keystroke) so a half-typed GUID never triggers a run.
-  inputs.connectionGuid.addEventListener('change', () => {
-    requestDatabases(false);
-    warmTables();
-  });
+  inputs.connectionGuid.addEventListener('change', onConnectionChanged);
   inputs.databaseName.addEventListener('change', () => warmTables());
   $('refreshDatabases').addEventListener('click', () => requestDatabases(true));
+
+  function onConnectionChanged() {
+    persist();
+    syncConnectionUI();
+    requestDatabases(false);
+    warmTables();
+  }
+
+  // ---------------------------------------------------------------- connection picker
+  // The dropdown shows connection *names* (listed through the Fabric API); the GUID input below it
+  // stays as the underlying value and as the manual fallback when the list is unavailable or the
+  // connection isn't in it.
+  let connections = [];
+  let manualMode = false;
+
+  function syncConnectionUI() {
+    const guid = inputs.connectionGuid.value.trim();
+    const known = connections.find((c) => c.id.toLowerCase() === guid.toLowerCase());
+    const showManual = manualMode || connections.length === 0;
+    const options = [];
+    if (!guid && !showManual) options.push(el('option', { value: '' }, 'Select a connection…'));
+    for (const c of connections) options.push(el('option', { value: c.id }, c.detail ? `${c.name} · ${c.detail}` : c.name));
+    if (guid && !known) options.push(el('option', { value: guid }, `Unnamed connection (${guid.slice(0, 8)}…)`));
+    options.push(el('option', { value: MANUAL }, connections.length ? 'Enter a GUID manually…' : 'Connection list unavailable — enter a GUID'));
+    connectionSelect.replaceChildren(...options);
+    connectionSelect.value = showManual ? MANUAL : guid || '';
+    inputs.connectionGuid.classList.toggle('hidden', !showManual);
+  }
 
   function requestDatabases(force) {
     const guid = inputs.connectionGuid.value.trim();
@@ -317,12 +348,14 @@
         }
         tenantInitialized = true;
         currentTenantAlias = m.activeTenantAlias;
+        if (isSwitch) manualMode = false;
+        syncConnectionUI();
 
         renderTenants(m.tenants, m.activeTenantAlias);
         const problems = m.configProblems.filter((p) => !p.startsWith('No tenant configured'));
         const banner = $('configProblems');
         banner.classList.toggle('hidden', problems.length === 0);
-        banner.textContent = problems.length ? `Configuration incomplète : ${problems.join(' • ')}` : '';
+        banner.textContent = problems.length ? `Incomplete configuration: ${problems.join(' • ')}` : '';
         renderHistory(m.history || []);
 
         if (pendingHistoryAction) {
@@ -335,6 +368,7 @@
           inputs.databaseName.value = entry.databaseName;
           cm.setValue(entry.query);
           persist();
+          syncConnectionUI();
           requestDatabases(false);
           warmTables();
           // Only auto-run if the switch actually landed on the entry's tenant (e.g. not deleted
@@ -348,16 +382,21 @@
         break;
       }
       case 'setConnectionGuid':
+        manualMode = false;
         inputs.connectionGuid.value = m.value;
-        persist();
-        requestDatabases(false);
-        warmTables();
+        onConnectionChanged();
+        break;
+      case 'connections':
+        connections = m.items;
+        renderTenants(m.tenants, m.activeTenantAlias);
+        syncConnectionUI();
         break;
       case 'prefillQuery':
         inputs.connectionGuid.value = m.connectionGuid;
         inputs.databaseName.value = m.databaseName;
         cm.setValue(m.query);
         persist();
+        syncConnectionUI();
         requestDatabases(false);
         warmTables();
         break;
@@ -369,7 +408,7 @@
         setDatabasesLoading(false);
         renderDatabaseOptions(m.names);
         $('databaseHint').classList.toggle('hidden', !m.error);
-        $('databaseHint').textContent = m.error ? 'Liste indisponible — saisie manuelle' : '';
+        $('databaseHint').textContent = m.error ? 'Database list unavailable — type the name' : '';
         break;
       case 'tables': {
         const key = `${m.connectionGuid}:${m.databaseName}`;
@@ -401,11 +440,8 @@
       case 'busy':
         setBusy(true);
         break;
-      case 'progress':
-        onProgress(m.event);
-        break;
       case 'report':
-        renderReport(m.report, m.reportFile);
+        renderReport(m.report);
         break;
       case 'error':
         renderError(m.error);
@@ -421,10 +457,13 @@
   function renderTenants(tenants, activeAlias) {
     tenantSelect.disabled = tenants.length === 0;
     if (tenants.length === 0) {
-      tenantSelect.replaceChildren(el('option', {}, 'Aucun tenant configuré'));
+      tenantSelect.replaceChildren(el('option', {}, 'No tenant configured'));
       return;
     }
-    tenantSelect.replaceChildren(...tenants.map((t) => el('option', { value: t.alias }, t.alias)));
+    // "Alias · connection name": the tenant's default connection, so it's clear where you are.
+    tenantSelect.replaceChildren(
+      ...tenants.map((t) => el('option', { value: t.alias }, t.connectionName ? `${t.alias} · ${t.connectionName}` : t.alias)),
+    );
     tenantSelect.value = tenants.some((t) => t.alias === activeAlias) ? activeAlias : tenants[0].alias;
   }
 
@@ -441,6 +480,7 @@
           inputs.databaseName.value = h.databaseName;
           cm.setValue(h.query);
           persist();
+          syncConnectionUI();
           requestDatabases(false);
           warmTables();
         };
@@ -459,7 +499,7 @@
         };
         return el(
           'li',
-          { className: 'history-item', onclick: () => load(false), title: "Charger dans l'éditeur sans exécuter" },
+          { className: 'history-item', onclick: () => load(false), title: 'Load into the editor without running' },
           el(
             'div',
             { className: 'history-text' },
@@ -469,14 +509,14 @@
             el(
               'span',
               { className: 'meta' },
-              `${h.tenantAlias} — ${new Date(h.timestamp).toLocaleString()}${h.durationMs !== undefined ? ` — ${(h.durationMs / 1000).toFixed(1)} s` : ''}`,
+              `${h.tenantAlias} — ${new Date(h.timestamp).toLocaleString()}`,
             ),
           ),
           el(
             'button',
             {
               className: 'icon-btn secondary history-run',
-              title: 'Charger et exécuter',
+              title: 'Load and run',
               onclick: (e) => {
                 e.stopPropagation();
                 load(true);
@@ -490,32 +530,25 @@
   }
 
   // ---------------------------------------------------------------- status
+  // Only a live "Running…" indicator while a query is in flight — no timings or run details are
+  // kept once it finishes (explicit request: no query-log block in the results).
   function setBusy(busy) {
-    document.querySelectorAll('header button, .card-toolbar button, .connection-card button')
+    document.querySelectorAll('header button, .card-toolbar button, .context-bar button, .context-bar select')
       .forEach((b) => (b.disabled = b.id === 'cancel' ? !busy : busy));
-    $('status').classList.remove('hidden');
-    $('status').classList.toggle('busy', busy);
+    $('status').classList.toggle('hidden', !busy);
     if (busy) {
-      for (const id of ['error', 'summary', 'alertBanner']) $(id).classList.add('hidden');
+      for (const id of ['error', 'alertBanner']) $(id).classList.add('hidden');
       $('result').replaceChildren();
-      $('diagnostics').classList.add('hidden');
-      $('statusText').textContent = 'Démarrage…';
       startedAt = performance.now();
       tick();
-      timer = window.setInterval(tick, 100);
+      timer = window.setInterval(tick, 200);
     } else {
       window.clearInterval(timer);
-      tick();
     }
   }
 
   function tick() {
-    $('elapsed').textContent = `${((performance.now() - startedAt) / 1000).toFixed(1)} s`;
-  }
-
-  function onProgress(e) {
-    $('statusText').textContent =
-      `${PHASES[e.phase] || e.phase}${e.jobStatus ? ` — job ${e.jobStatus}` : ''}${e.pollCount ? ` (poll #${e.pollCount})` : ''}`;
+    $('elapsed').textContent = `${Math.floor((performance.now() - startedAt) / 1000)} s`;
   }
 
   // ---------------------------------------------------------------- rendering
@@ -542,28 +575,12 @@
     );
   }
 
-  /** One run per report since V1 (runQuery.ts) — no more P1-P4 scenario chips (V1-SCOPE.md §4.A). */
-  function renderReport(report, reportFile) {
+  /** One run per report since V1 (runQuery.ts). Just the outcome: alerts, error or result tables. */
+  function renderReport(report) {
     const r = report.runs[0];
-    const summary = $('summary');
-    summary.classList.remove('hidden');
-    summary.replaceChildren(
-      el('div', { className: 'meta' }, `${(report.wallClockMs / 1000).toFixed(1)} s — rapport : ${reportFile}`),
-      timingsBlock(r.timings),
-    );
     renderAlertBanner(r.checks);
-    // Diagnostics is a "everything looked fine, here's the detail" panel — on failure the red error
-    // box already says what matters, so skip it there instead of piling on next to it.
-    const diagnostics = $('diagnostics');
-    if (!r.succeeded && r.error) {
-      renderError(r.error);
-      diagnostics.classList.add('hidden');
-    } else {
-      diagnostics.classList.remove('hidden');
-      $('diagnosticsList').replaceChildren(...checksListItems(r.checks));
-    }
-
-    $('result').replaceChildren(...r.activities.map(resultTable));
+    if (!r.succeeded && r.error) renderError(r.error);
+    $('result').replaceChildren(...r.activities.map((a) => resultTable(a, r.activities.length > 1)));
   }
 
   /** Surfaces only the checks a daily user needs to see; everything else lives in Diagnostics. */
@@ -580,59 +597,27 @@
     );
   }
 
-  function timingsBlock(t) {
-    const s = (ms) => (ms === undefined || ms === null ? 'n/a' : `${(ms / 1000).toFixed(2)} s`);
-    const items = [
-      ['Total', t.totalMs, true],
-      ['Déclenchement', t.triggerMs],
-      ['Attente', t.waitMs],
-      ['Résultat', t.resultMs],
-      ['File Fabric', t.fabricQueueMs],
-      ['Run Fabric', t.fabricRunMs],
-      ...Object.entries(t.activityMs || {}).map(([name, ms]) => [name, ms]),
-      ['Auth (exclu)', t.authMs],
-    ];
-    return el(
-      'div',
-      { className: 'timings' },
-      ...items.map(([label, v, strong]) =>
-        el('div', { className: `metric${strong ? ' strong' : ''}` }, el('div', { className: 'v' }, s(v)), el('div', { className: 'l' }, label)),
-      ),
-      el('div', { className: 'metric' }, el('div', { className: 'v' }, String(t.pollCount)), el('div', { className: 'l' }, 'Polls')),
-    );
-  }
-
-  function checksListItems(checks) {
-    return checks.map((c) =>
-      el('li', {}, el('span', { className: `chip ${c.status}` }, `${c.point} ${c.status}`), el('code', {}, c.name), ` ${c.message}`),
-    );
-  }
-
   /** One block per query activity (Lookup / Script): header + export button, error if any, then its
    *  sortable/filterable table. */
-  function resultTable(activity) {
+  function resultTable(activity, showName) {
     const ok = activity.succeeded;
     const built = activity.columns.length ? buildDataTable(activity.columns, activity.rows) : null;
     const total = activity.rowsTruncatedInReport || activity.rows.length;
 
     const header = el(
-      'h3',
+      'div',
       { className: 'activity-title' },
-      el('span', { className: `chip ${ok ? 'PASS' : 'FAIL'}` }, ok ? 'OK' : activity.errorKind || activity.status),
-      ` ${activity.activityName} `,
-      el(
-        'span',
-        { className: 'meta' },
-        `<${activity.activityType}>${activity.durationInMs !== undefined ? ` — ${(activity.durationInMs / 1000).toFixed(2)} s` : ''} — ${activity.columns.length} colonne(s) — `,
-      ),
-      built ? built.countEl : el('span', { className: 'meta' }, `${total} ligne(s)`),
+      ok ? icon('pass-filled') : icon('error'),
+      showName ? el('span', { className: 'activity-name' }, activity.activityName) : '',
+      built ? built.countEl : el('span', { className: 'meta' }, `${total} row(s)`),
+      el('span', { className: 'meta' }, `· ${activity.columns.length} column(s)`),
       el('span', { className: 'spacer' }),
       built
         ? el(
             'button',
             {
               className: 'secondary export',
-              title: 'Exporter les lignes actuellement affichées (filtre/tri appliqués)',
+              title: 'Export the rows currently shown (filter/sort applied)',
               onclick: () =>
                 vscode.postMessage({
                   type: 'exportCsv',
@@ -642,14 +627,14 @@
                 }),
             },
             icon('save'),
-            ' Exporter CSV',
+            ' Export CSV',
           )
         : '',
     );
-    const block = el('div', { className: 'activity' }, header);
+    const block = el('div', { className: 'activity card' }, header);
     if (!ok && activity.error) {
       const [title] = ERROR_TITLES[activity.errorKind] || ERROR_TITLES.unexpected;
-      block.append(el('div', { className: 'error-message' }, `${title} : ${activity.error.message}`));
+      block.append(el('div', { className: 'error-message' }, `${title}: ${activity.error.message}`));
     }
     if (built) block.append(built.wrap);
     return block;
@@ -689,7 +674,7 @@
       const visible = compute();
       tbody.replaceChildren(...visible.map((row) => el('tr', {}, ...columns.map((c) => cell(row[c])))));
       countEl.textContent =
-        visible.length === allRows.length ? `${allRows.length} ligne(s)` : `${visible.length} / ${allRows.length} ligne(s)`;
+        visible.length === allRows.length ? `${allRows.length} row(s)` : `${visible.length} / ${allRows.length} row(s)`;
     }
 
     function updateSortIndicators() {
@@ -723,7 +708,7 @@
       headerCells.push(th);
       headerRow.append(th);
 
-      const filterInput = el('input', { type: 'text', placeholder: 'filtrer…', className: 'col-filter', spellcheck: false });
+      const filterInput = el('input', { type: 'text', placeholder: 'filter…', className: 'col-filter', spellcheck: false });
       filterInput.addEventListener('input', () => {
         state.filters[c] = filterInput.value.trim().toLowerCase();
         window.clearTimeout(debounceTimer);

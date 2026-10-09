@@ -7,12 +7,21 @@ export class TenantTreeItem extends vscode.TreeItem {
   constructor(
     public readonly tenant: TenantEntry,
     isActive: boolean,
+    connectionName: string | undefined,
   ) {
     // Collapsed even without a connectionGuid: expanding it is how the user discovers they need to
     // set one (via the MessageTreeItem hint in getChildren), rather than a dead end with no arrow.
     super(tenant.alias, vscode.TreeItemCollapsibleState.Collapsed);
-    this.description = isActive ? 'actif' : tenant.tenantId;
-    this.tooltip = `Tenant: ${tenant.tenantId}\nWorkspace: ${tenant.workspaceId}`;
+    // Which connection this tenant browses is the thing you most need to see at a glance.
+    this.description = connectionName ?? tenant.connectionGuid ?? 'no default connection';
+    this.tooltip = [
+      isActive ? 'Active tenant' : undefined,
+      `Tenant: ${tenant.tenantId}`,
+      `Workspace: ${tenant.workspaceId}`,
+      tenant.connectionGuid ? `Connection: ${connectionName ?? '?'} (${tenant.connectionGuid})` : undefined,
+    ]
+      .filter(Boolean)
+      .join('\n');
     this.iconPath = new vscode.ThemeIcon(isActive ? 'check' : 'circle-large-outline');
     this.contextValue = isActive ? 'tenant-active' : 'tenant-inactive';
     // Click = same one-step action as the sidebar's purpose: switch to this tenant and open the panel.
@@ -25,10 +34,13 @@ export class DatabaseTreeItem extends vscode.TreeItem {
     public readonly tenantAlias: string,
     public readonly connectionGuid: string,
     public readonly databaseName: string,
+    /** Added by hand (gatepulse.tenants[].extraDatabases) rather than listed by sys.databases. */
+    public readonly manual = false,
   ) {
     super(databaseName, vscode.TreeItemCollapsibleState.Collapsed);
     this.iconPath = new vscode.ThemeIcon('database');
-    this.contextValue = 'database';
+    this.description = manual ? 'added manually' : undefined;
+    this.contextValue = manual ? 'database-manual' : 'database';
   }
 }
 
@@ -58,7 +70,7 @@ export class TableTreeItem extends vscode.TreeItem {
     public readonly objectType: 'table' | 'view',
   ) {
     super(tableName, vscode.TreeItemCollapsibleState.Collapsed);
-    this.tooltip = `${schemaName}.${tableName} (${objectType === 'view' ? 'vue' : 'table'})`;
+    this.tooltip = `${schemaName}.${tableName} (${objectType === 'view' ? 'view' : 'table'})`;
     this.iconPath = new vscode.ThemeIcon(objectType === 'view' ? 'eye' : 'table');
     // No `command`: a click only expands to the columns (browsing shouldn't have a side effect on
     // the editor — "GatePulse: Select Top 100 Rows", right-click, is the explicit way to query it).
@@ -106,6 +118,7 @@ export class TenantTreeProvider implements vscode.TreeDataProvider<GatePulseTree
   constructor(
     private readonly getTenants: () => TenantEntry[],
     private readonly getActiveAlias: () => string,
+    private readonly getConnectionName: (guid: string | undefined) => string | undefined,
     private readonly ensureActiveTenant: (alias: string) => Promise<void>,
     private readonly listDatabasesFor: (connectionGuid: string) => Promise<string[]>,
     private readonly listObjectsFor: (connectionGuid: string, databaseName: string) => Promise<SchemaObject[]>,
@@ -128,7 +141,9 @@ export class TenantTreeProvider implements vscode.TreeDataProvider<GatePulseTree
   async getChildren(element?: GatePulseTreeItem): Promise<GatePulseTreeItem[]> {
     if (!element) {
       const active = this.getActiveAlias();
-      return this.getTenants().map((t) => new TenantTreeItem(t, t.alias === active));
+      return this.getTenants().map(
+        (t) => new TenantTreeItem(t, t.alias === active, this.getConnectionName(t.connectionGuid)),
+      );
     }
 
     if (element instanceof TenantTreeItem) {
@@ -163,30 +178,40 @@ export class TenantTreeProvider implements vscode.TreeDataProvider<GatePulseTree
     try {
       await this.ensureActiveTenant(tenant.alias);
     } catch (err) {
-      return [new MessageTreeItem(`Erreur : ${(err as Error).message}`, 'warning')];
+      return [new MessageTreeItem(`Error: ${(err as Error).message}`, 'warning')];
     }
     const connectionGuid = tenant.connectionGuid;
     if (!connectionGuid) {
       const hint = new MessageTreeItem(
-        'Aucune connexion par défaut — cliquer pour en choisir une',
+        'No default connection — click to pick one',
         'info',
       );
       hint.command = { command: 'gatepulse.pickConnection', title: 'Pick Connection' };
       return [hint];
     }
+    const extras = tenant.extraDatabases ?? [];
+    const items = (listed: string[]) => {
+      const seen = new Set(listed.map((n) => n.toLowerCase()));
+      return [
+        ...listed.map((name) => ({ name, manual: false })),
+        ...extras.filter((e) => !seen.has(e.toLowerCase())).map((name) => ({ name, manual: true })),
+      ]
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+        .map((d) => new DatabaseTreeItem(tenant.alias, connectionGuid, d.name, d.manual));
+    };
     try {
-      const names = await this.listDatabasesFor(connectionGuid);
-      if (names.length === 0) return [new MessageTreeItem('Aucune base trouvée', 'info')];
-      return names.map((name) => new DatabaseTreeItem(tenant.alias, connectionGuid, name));
+      const result = items(await this.listDatabasesFor(connectionGuid));
+      return result.length ? result : [new MessageTreeItem('No database found', 'info')];
     } catch (err) {
-      return [new MessageTreeItem(`Erreur : ${(err as Error).message}`, 'warning')];
+      // Listing can fail (no access to master...) — databases added by hand stay usable regardless.
+      return [...items([]), new MessageTreeItem(`Error: ${(err as Error).message}`, 'warning')];
     }
   }
 
   private async getSchemas(db: DatabaseTreeItem): Promise<GatePulseTreeItem[]> {
     try {
       const objects = await this.listObjectsFor(db.connectionGuid, db.databaseName);
-      if (objects.length === 0) return [new MessageTreeItem('Aucune table/vue trouvée', 'info')];
+      if (objects.length === 0) return [new MessageTreeItem('No table or view found', 'info')];
       const schemas = [...new Set(objects.map((o) => o.schema))].sort((a, b) => a.localeCompare(b));
       return schemas.map(
         (schema) =>
@@ -199,7 +224,7 @@ export class TenantTreeProvider implements vscode.TreeDataProvider<GatePulseTree
           ),
       );
     } catch (err) {
-      return [new MessageTreeItem(`Erreur : ${(err as Error).message}`, 'warning')];
+      return [new MessageTreeItem(`Error: ${(err as Error).message}`, 'warning')];
     }
   }
 
@@ -211,10 +236,10 @@ export class TenantTreeProvider implements vscode.TreeDataProvider<GatePulseTree
         table.schemaName,
         table.tableName,
       );
-      if (columns.length === 0) return [new MessageTreeItem('Aucune colonne trouvée', 'info')];
+      if (columns.length === 0) return [new MessageTreeItem('No column found', 'info')];
       return columns.map((c) => new ColumnTreeItem(c));
     } catch (err) {
-      return [new MessageTreeItem(`Erreur : ${(err as Error).message}`, 'warning')];
+      return [new MessageTreeItem(`Error: ${(err as Error).message}`, 'warning')];
     }
   }
 }

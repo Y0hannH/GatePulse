@@ -10,13 +10,19 @@ import type { LogEntry, LogSink } from '../core/logger';
 import { formatEntry } from '../core/logger';
 import { ensurePipeline } from '../core/provision';
 import type { ColumnInfo, SchemaObject } from '../core/runQuery';
-import { listColumns, listDatabases, listSchemaObjects, sqlIdentifier } from '../core/runQuery';
+import {
+  convertedColumnExpression,
+  listColumns,
+  listDatabases,
+  listSchemaObjects,
+  sqlIdentifier,
+} from '../core/runQuery';
 import type { ScenarioContext } from '../core/scenarios';
 import type { Session } from '../core/session';
 import { createSession } from '../core/session';
 import type { PanelServices } from './panel';
 import { SqlPanel } from './panel';
-import type { TableTreeItem } from './tenantTree';
+import type { DatabaseTreeItem, TableTreeItem, TenantTreeItem } from './tenantTree';
 import { TenantTreeProvider } from './tenantTree';
 
 /** Resolves and caches the pipeline id on `session.cfg` — shared by a query run, the panel's
@@ -28,7 +34,7 @@ async function ensurePipelineResolved(session: Session): Promise<void> {
   session.cfg.pipelineId = resolved.id;
   if (resolved.created) {
     void vscode.window.showInformationMessage(
-      `GatePulse : pipeline "${resolved.displayName}" provisionné automatiquement dans ce workspace.`,
+      `GatePulse: pipeline "${resolved.displayName}" was provisioned automatically in this workspace.`,
     );
   }
 }
@@ -37,26 +43,8 @@ function scenarioContext(session: Session): ScenarioContext {
   return { cfg: session.cfg, runner: session.runner, client: session.client, logger: session.logger };
 }
 
-/** SQL Server types the Fabric Lookup/Script data-transfer engine can't move (real error observed:
- *  "ErrorCode=DataTypeNotSupported ... The data type ByteArray is not supported ..." on a
- *  varbinary(max) column). `openTableQuery` excludes these from its generated SELECT rather than
- *  emitting `*` and letting the run fail on the first binary/XML/spatial column it hits. */
-const UNSELECTABLE_COLUMN_TYPES = new Set([
-  'binary',
-  'varbinary',
-  'image',
-  'timestamp',
-  'rowversion',
-  'xml',
-  'geography',
-  'geometry',
-  'hierarchyid',
-  'sql_variant',
-  'cursor',
-  'table',
-]);
-
 const CACHE_STORAGE_KEY = 'gatepulse.schemaMetadataCache';
+const CONNECTION_NAMES_KEY = 'gatepulse.connectionNames';
 
 interface PersistedSchemaCache {
   databases: Record<string, string[]>;
@@ -145,9 +133,16 @@ async function updateActiveTenant(
   context: vscode.ExtensionContext,
   patch: Partial<Omit<TenantEntry, 'alias' | 'tenantId' | 'workspaceId'>>,
 ): Promise<void> {
-  const active = getActiveTenant(context, readTenants());
+  await updateTenant(getActiveTenant(context, readTenants()).alias, patch);
+}
+
+/** Same as updateActiveTenant, for any tenant by alias (sidebar actions on a non-active tenant). */
+async function updateTenant(
+  alias: string,
+  patch: Partial<Omit<TenantEntry, 'alias' | 'tenantId' | 'workspaceId'>>,
+): Promise<void> {
   const updated = readRawTenants().map((t) =>
-    t && typeof t === 'object' && (t as TenantEntry).alias === active.alias ? { ...t, ...patch } : t,
+    t && typeof t === 'object' && (t as TenantEntry).alias === alias ? { ...t, ...patch } : t,
   );
   await vscode.workspace
     .getConfiguration('gatepulse')
@@ -247,12 +242,44 @@ export function activate(context: vscode.ExtensionContext): void {
     invalidateSession();
   };
 
+  // guid -> display name, remembered across restarts (and across tenants: the dropdown/tree show the
+  // default connection's name for tenants that aren't the active one, whose token can't list it now).
+  const connectionNames: Record<string, string> = {
+    ...context.globalState.get<Record<string, string>>(CONNECTION_NAMES_KEY, {}),
+  };
+  const getConnectionName = (guid: string | undefined): string | undefined =>
+    guid ? connectionNames[guid.toLowerCase()] : undefined;
+  const rememberConnectionNames = (connections: FabricConnection[]): void => {
+    let changed = false;
+    for (const c of connections) {
+      const key = c.id.toLowerCase();
+      if (connectionNames[key] !== c.displayName) {
+        connectionNames[key] = c.displayName;
+        changed = true;
+      }
+    }
+    if (changed) void context.globalState.update(CONNECTION_NAMES_KEY, connectionNames);
+  };
+
+  /** Listed databases + the ones the user added by hand for this tenant (see `extraDatabases`). */
+  const withExtraDatabases = (names: string[], connectionGuid: string): string[] => {
+    const tenant = getActiveTenant(context, readTenants());
+    const extras =
+      tenant.connectionGuid?.toLowerCase() === connectionGuid.toLowerCase() ? (tenant.extraDatabases ?? []) : [];
+    const seen = new Set(names.map((n) => n.toLowerCase()));
+    return [...names, ...extras.filter((e) => !seen.has(e.toLowerCase()))].sort((a, b) =>
+      a.localeCompare(b, undefined, { sensitivity: 'base' }),
+    );
+  };
+
   /** Never throws: a listing failure degrades to "no connections found", never blocks manual entry. */
-  const getConnections = async (): Promise<FabricConnection[]> => {
+  const getConnections = async (force = false): Promise<FabricConnection[]> => {
+    if (force) cachedConnections = undefined;
     if (cachedConnections) return cachedConnections;
     const s = getSession();
     try {
       cachedConnections = (await s.client.listConnections()).filter(isSupportedSqlConnection);
+      rememberConnectionNames(cachedConnections);
     } catch (err) {
       s.logger.warn(
         'connections.listFailed',
@@ -363,14 +390,18 @@ export function activate(context: vscode.ExtensionContext): void {
     getTenants: readTenants,
     getActiveTenantAlias,
     ensurePipelineResolved,
-    getDatabases,
+    getDatabases: async (connectionGuid, hint, force) =>
+      withExtraDatabases(await getDatabases(connectionGuid, hint, force), connectionGuid),
     getSchemaObjects,
     getColumns,
+    getConnections,
+    getConnectionName,
   };
 
   const tenantTree = new TenantTreeProvider(
     readTenants,
     getActiveTenantAlias,
+    getConnectionName,
     ensureActiveTenantForTree,
     (connectionGuid) => getDatabases(connectionGuid, '', false),
     getSchemaObjects,
@@ -380,9 +411,10 @@ export function activate(context: vscode.ExtensionContext): void {
     treeDataProvider: tenantTree,
   });
 
-  /** Builds `SELECT TOP 100 ...` for "GatePulse: Select Top 100 Rows", naming columns explicitly
-   *  instead of `*` only when at least one column has to be dropped — no point in the verbosity
-   *  otherwise. Falls back to `*` if the column list can't be fetched at all (never block on metadata). */
+  /** Builds `SELECT TOP 100 ...` for "GatePulse: Select Top 100 Rows". Uses `*` unless a column has
+   *  a type the Lookup can't transfer (binary, xml, spatial...): then every column is listed and
+   *  those are cast to text, so the query just works instead of failing on its first run. Falls back
+   *  to `*` if the column list can't be fetched at all (metadata is never a precondition to querying). */
   const buildTableQuery = async (
     connectionGuid: string,
     databaseName: string,
@@ -391,13 +423,16 @@ export function activate(context: vscode.ExtensionContext): void {
   ): Promise<string> => {
     try {
       const columns = await getColumns(connectionGuid, databaseName, schema, table);
-      const usable = columns.filter((c) => !UNSELECTABLE_COLUMN_TYPES.has(c.dataType.toLowerCase()));
-      if (usable.length > 0 && usable.length < columns.length) {
-        const list = usable.map((c) => sqlIdentifier(c.name)).join(', ');
-        return `SELECT TOP 100 ${list} FROM ${sqlIdentifier(schema)}.${sqlIdentifier(table)}`;
+      const items = columns.map((c) => {
+        const id = sqlIdentifier(c.name);
+        const expr = convertedColumnExpression(id, c.dataType);
+        return { text: expr ? `${expr} AS ${id}` : id, converted: !!expr };
+      });
+      if (items.some((i) => i.converted)) {
+        return `SELECT TOP 100 ${items.map((i) => i.text).join(', ')} FROM ${sqlIdentifier(schema)}.${sqlIdentifier(table)}`;
       }
     } catch {
-      // Fall through — the column-exclusion is a convenience, never a precondition to querying.
+      // Fall through to the plain `*`.
     }
     return `SELECT TOP 100 * FROM ${sqlIdentifier(schema)}.${sqlIdentifier(table)}`;
   };
@@ -447,11 +482,42 @@ export function activate(context: vscode.ExtensionContext): void {
       void context.globalState.update(CACHE_STORAGE_KEY, undefined);
       tenantTree.refresh();
     }),
+    // Databases `sys.databases` doesn't list for this login (queryable all the same) can be added to
+    // the tenant by hand; they then show up in the tree and in the panel's database list.
+    vscode.commands.registerCommand('gatepulse.addDatabase', async (item?: TenantTreeItem) => {
+      const tenant = item?.tenant ?? getActiveTenant(context, readTenants());
+      if (!tenant.alias) {
+        void vscode.window.showWarningMessage('GatePulse: add a tenant first.');
+        return;
+      }
+      const name = (
+        await vscode.window.showInputBox({
+          prompt: `GatePulse: database to add to "${tenant.alias}"`,
+          placeHolder: 'MyDatabase',
+          ignoreFocusOut: true,
+          validateInput: (v) => (v.trim() ? null : 'Name required'),
+        })
+      )?.trim();
+      if (!name) return;
+      const current = tenant.extraDatabases ?? [];
+      if (current.some((d) => d.toLowerCase() === name.toLowerCase())) return;
+      await updateTenant(tenant.alias, { extraDatabases: [...current, name] });
+    }),
+    vscode.commands.registerCommand('gatepulse.removeDatabase', async (item?: DatabaseTreeItem) => {
+      if (!item) return;
+      const tenant = readTenants().find((t) => t.alias === item.tenantAlias);
+      if (!tenant) return;
+      await updateTenant(tenant.alias, {
+        extraDatabases: (tenant.extraDatabases ?? []).filter(
+          (d) => d.toLowerCase() !== item.databaseName.toLowerCase(),
+        ),
+      });
+    }),
     vscode.commands.registerCommand('gatepulse.showLogs', () => channel.show()),
     vscode.commands.registerCommand('gatepulse.signOut', async () => {
       await getSession().auth.signOut();
       void vscode.window.showInformationMessage(
-        'GatePulse : session effacée, la prochaine exécution redemandera la connexion.',
+        'GatePulse: signed out — the next run will ask you to sign in again.',
       );
     }),
     // alias: passed directly by the panel's own tenant dropdown; omitted from the command palette,
@@ -464,13 +530,13 @@ export function activate(context: vscode.ExtensionContext): void {
       const tenants = readTenants();
       if (tenants.length === 0) {
         void vscode.window.showWarningMessage(
-          'GatePulse : aucun tenant configuré ("gatepulse.tenants" est vide).',
+          'GatePulse: no tenant configured ("gatepulse.tenants" is empty).',
         );
         return;
       }
       const picked = await vscode.window.showQuickPick(
         tenants.map((t) => ({ label: t.alias, description: t.tenantId, tenant: t })),
-        { placeHolder: 'GatePulse : choisir le tenant actif' },
+        { placeHolder: 'GatePulse: choose the active tenant' },
       );
       if (!picked) return;
       await switchToTenant(picked.tenant.alias);
@@ -483,19 +549,18 @@ export function activate(context: vscode.ExtensionContext): void {
       const existingAliases = existingRaw
         .map((t) => (t && typeof t === 'object' ? (t as TenantEntry).alias : undefined))
         .filter((a): a is string => typeof a === 'string');
-      // ignoreFocusOut: renseigner un tenantId/workspaceId implique presque toujours d'aller le
-      // copier ailleurs (portail Azure, Fabric) — sans ça, la boîte se fermait dès qu'on changeait
-      // de fenêtre et il fallait tout recommencer depuis l'alias.
+      // ignoreFocusOut: filling in a tenantId/workspaceId almost always means copying it from
+      // elsewhere (Azure / Fabric portal) — without it the box closed as soon as the window lost focus.
       const alias = (
         await vscode.window.showInputBox({
-          prompt: 'GatePulse : nom du tenant (alias)',
+          prompt: 'GatePulse: tenant name (alias)',
           placeHolder: 'Client A - Prod',
           ignoreFocusOut: true,
           validateInput: (v) => {
             const trimmed = v.trim();
-            if (!trimmed) return 'Alias requis';
+            if (!trimmed) return 'Alias required';
             if (existingAliases.some((a) => a.toLowerCase() === trimmed.toLowerCase()))
-              return `L'alias "${trimmed}" existe déjà`;
+              return `The alias "${trimmed}" already exists`;
             return null;
           },
         })
@@ -503,23 +568,23 @@ export function activate(context: vscode.ExtensionContext): void {
       if (!alias) return;
       const tenantId = (
         await vscode.window.showInputBox({
-          prompt: 'GatePulse : tenant ID (GUID Entra ID)',
+          prompt: 'GatePulse: tenant ID (Entra ID GUID)',
           placeHolder: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
           ignoreFocusOut: true,
-          validateInput: (v) => (isGuid(v.trim()) ? null : 'GUID attendu'),
+          validateInput: (v) => (isGuid(v.trim()) ? null : 'GUID expected'),
         })
       )?.trim();
       if (!tenantId) return;
       const workspaceId = (
         await vscode.window.showInputBox({
-          prompt: 'GatePulse : workspace ID (GUID Fabric)',
+          prompt: 'GatePulse: workspace ID (Fabric GUID)',
           placeHolder: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
           ignoreFocusOut: true,
-          validateInput: (v) => (isGuid(v.trim()) ? null : 'GUID attendu'),
+          validateInput: (v) => (isGuid(v.trim()) ? null : 'GUID expected'),
         })
       )?.trim();
       if (!workspaceId) return;
-      // Global, jamais Workspace : GatePulse s'utilise sans dossier ouvert (V1-SCOPE.md §2).
+      // Global, never Workspace: GatePulse is used without an open folder (V1-SCOPE.md §2).
       await vscode.workspace
         .getConfiguration('gatepulse')
         .update('tenants', [...existingRaw, { alias, tenantId, workspaceId }], vscode.ConfigurationTarget.Global);
@@ -530,7 +595,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const connections = await getConnections();
       if (connections.length === 0) {
         void vscode.window.showInformationMessage(
-          'GatePulse : aucune connexion SQL trouvée (ou liste indisponible) — saisir le GUID à la main dans le panel.',
+          'GatePulse: no SQL connection found (or the list is unavailable) — enter the GUID by hand in the panel.',
         );
         return;
       }
@@ -542,16 +607,15 @@ export function activate(context: vscode.ExtensionContext): void {
           detail: c.gatewayId ? `gateway ${c.gatewayId}` : c.connectivityType,
           connection: c,
         })),
-        { placeHolder: 'GatePulse : choisir une connexion SQL (GUID copié dans le presse-papiers)' },
+        { placeHolder: 'GatePulse: choose a SQL connection' },
       );
       if (!picked) return;
       // Fills the panel field directly when it's the source of the request; clipboard copy stays
       // useful for the command-palette entry point, where no panel field is in reach.
       SqlPanel.current?.setConnectionGuid(picked.connection.id);
-      await vscode.env.clipboard.writeText(picked.connection.id);
       const choice = await vscode.window.showInformationMessage(
-        `GatePulse : GUID de "${picked.connection.displayName}" copié dans le presse-papiers.`,
-        'Enregistrer comme connexion par défaut pour ce tenant',
+        `GatePulse: using connection "${picked.connection.displayName}".`,
+        'Save as default for this tenant',
       );
       if (choice) {
         await updateActiveTenant(context, { connectionGuid: picked.connection.id });
@@ -565,30 +629,30 @@ export function activate(context: vscode.ExtensionContext): void {
         items = await s.client.listItems('DataPipeline');
       } catch (err) {
         void vscode.window.showErrorMessage(
-          `GatePulse : impossible de lister les pipelines du workspace (${(err as Error).message}).`,
+          `GatePulse: could not list the workspace's pipelines (${(err as Error).message}).`,
         );
         return;
       }
       if (items.length === 0) {
-        void vscode.window.showInformationMessage('GatePulse : aucun pipeline trouvé dans ce workspace.');
+        void vscode.window.showInformationMessage('GatePulse: no pipeline found in this workspace.');
         return;
       }
       const picked = await vscode.window.showQuickPick(
         items.map((i) => ({ label: i.displayName, description: i.id, item: i })),
-        { placeHolder: 'GatePulse : override manuel — choisir le pipeline pour ce tenant' },
+        { placeHolder: 'GatePulse: manual override — choose the pipeline for this tenant' },
       );
       if (!picked) return;
       await updateActiveTenant(context, { pipelineId: picked.item.id });
       invalidateSession();
       void vscode.window.showInformationMessage(
-        `GatePulse : pipeline "${picked.item.displayName}" défini comme override pour ce tenant.`,
+        `GatePulse: pipeline "${picked.item.displayName}" set as the override for this tenant.`,
       );
     }),
     vscode.commands.registerCommand('gatepulse.refreshConnections', async () => {
       cachedConnections = undefined;
       const connections = await getConnections();
       void vscode.window.showInformationMessage(
-        `GatePulse : ${connections.length} connexion(s) SQL trouvée(s).`,
+        `GatePulse: ${connections.length} SQL connection(s) found.`,
       );
     }),
   );

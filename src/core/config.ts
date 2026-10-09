@@ -50,6 +50,9 @@ export interface TenantEntry {
   connectionGuid?: string;
   /** Optional pre-fill for the panel. */
   databaseName?: string;
+  /** Optional: databases that exist behind connectionGuid but that sys.databases doesn't list for
+   *  this login — added by hand, merged into the sidebar tree and the panel's database list. */
+  extraDatabases?: string[];
 }
 
 export interface GatePulseConfig {

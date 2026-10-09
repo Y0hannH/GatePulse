@@ -5,6 +5,7 @@ import * as vscode from 'vscode';
 import type { TenantEntry } from '../core/config';
 import { checkConfig, checkTenants, isGuid } from '../core/config';
 import { serializeError } from '../core/errors';
+import type { FabricConnection } from '../core/fabricClient';
 import type { ColumnInfo, SchemaObject } from '../core/runQuery';
 import { runSingle } from '../core/runQuery';
 import type { ScenarioContext, ScenarioReport } from '../core/scenarios';
@@ -30,6 +31,10 @@ export interface PanelServices {
     schema: string,
     table: string,
   ) => Promise<ColumnInfo[]>;
+  /** Fabric SQL connections the active tenant can use (cached; `force` re-lists). Never throws. */
+  getConnections: (force?: boolean) => Promise<FabricConnection[]>;
+  /** Display name remembered for a connection GUID, if it was ever listed. */
+  getConnectionName: (guid: string | undefined) => string | undefined;
 }
 
 type FromWebview =
@@ -40,7 +45,7 @@ type FromWebview =
   | { type: 'openSettings' }
   | { type: 'switchTenant'; alias: string }
   | { type: 'addTenant' }
-  | { type: 'pickConnection' }
+  | { type: 'refreshConnections' }
   | { type: 'listDatabases'; connectionGuid: string; databaseNameHint: string; force: boolean }
   | { type: 'listTables'; connectionGuid: string; databaseName: string }
   | { type: 'listTableColumns'; connectionGuid: string; databaseName: string; schema: string; table: string }
@@ -53,7 +58,6 @@ interface HistoryEntry {
   connectionGuid: string;
   databaseName: string;
   succeeded: boolean;
-  durationMs?: number;
 }
 
 const HISTORY_KEY = 'gatepulse.history';
@@ -129,9 +133,36 @@ export class SqlPanel {
       type: 'init',
       defaults: { connectionGuid: cfg.connectionGuid, databaseName: cfg.databaseName },
       configProblems: [...checkTenants(this.services.getTenants()), ...checkConfig(cfg)],
-      tenants: this.services.getTenants().map((t) => ({ alias: t.alias, tenantId: t.tenantId })),
+      tenants: this.services.getTenants().map((t) => ({
+        alias: t.alias,
+        tenantId: t.tenantId,
+        connectionName: this.services.getConnectionName(t.connectionGuid),
+      })),
       activeTenantAlias: this.services.getActiveTenantAlias(),
       history: this.getHistory(),
+    });
+    void this.sendConnections(false);
+  }
+
+  /** Posts the connection list (names + GUIDs) for the panel's connection dropdown. A failure just
+   *  leaves the dropdown on manual GUID entry — and, once names are known, the tenant dropdown is
+   *  re-sent so it can show the default connection's name. */
+  private async sendConnections(force: boolean): Promise<void> {
+    if (checkConfig(this.services.getSession().cfg).length) return; // nothing to list with yet
+    const connections = await this.services.getConnections(force);
+    await this.post({
+      type: 'connections',
+      items: connections.map((c) => ({
+        id: c.id,
+        name: c.displayName,
+        detail: c.gatewayId ? 'Gateway' : c.connectivityType,
+      })),
+      tenants: this.services.getTenants().map((t) => ({
+        alias: t.alias,
+        tenantId: t.tenantId,
+        connectionName: this.services.getConnectionName(t.connectionGuid),
+      })),
+      activeTenantAlias: this.services.getActiveTenantAlias(),
     });
   }
 
@@ -172,8 +203,8 @@ export class SqlPanel {
         return vscode.commands.executeCommand('gatepulse.switchTenant', m.alias);
       case 'addTenant':
         return vscode.commands.executeCommand('gatepulse.addTenant');
-      case 'pickConnection':
-        return vscode.commands.executeCommand('gatepulse.pickConnection');
+      case 'refreshConnections':
+        return this.sendConnections(true);
       case 'exportCsv':
         return this.exportCsv(m);
       case 'listDatabases':
@@ -256,19 +287,19 @@ export class SqlPanel {
     if (!uri) return;
     try {
       await fs.promises.writeFile(uri.fsPath, toCsv(m.columns, m.rows), 'utf8');
-      void vscode.window.showInformationMessage(`GatePulse : export écrit dans ${uri.fsPath}`);
+      void vscode.window.showInformationMessage(`GatePulse: exported to ${uri.fsPath}`);
     } catch (err) {
       // A locked/read-only target (e.g. the CSV still open in Excel) used to throw synchronously
       // and vanish — the write is now async and its failure is surfaced explicitly.
       void vscode.window.showErrorMessage(
-        `GatePulse : échec de l'export CSV vers ${uri.fsPath} — ${(err as Error).message}`,
+        `GatePulse: CSV export to ${uri.fsPath} failed — ${(err as Error).message}`,
       );
     }
   }
 
   private async execute(m: Extract<FromWebview, { type: 'run' }>): Promise<void> {
     if (this.controller) {
-      void vscode.window.showWarningMessage('GatePulse: an execution is already in progress.');
+      void vscode.window.showWarningMessage('GatePulse: a query is already running.');
       return;
     }
     const session = this.services.getSession();
@@ -294,11 +325,18 @@ export class SqlPanel {
       signal: this.controller.signal,
       onProgress: (e) => void this.post({ type: 'progress', event: e }),
     };
-    const startedAt = Date.now();
     let succeeded = false;
     try {
       await this.services.ensurePipelineResolved(session);
-      const report: ScenarioReport = await runSingle(ctx, { ...conn, query: m.query });
+      const report: ScenarioReport = await runSingle(
+        ctx,
+        { ...conn, query: m.query },
+        {
+          autoConvertUnsupportedTypes: vscode.workspace
+            .getConfiguration('gatepulse')
+            .get<boolean>('autoConvertUnsupportedColumns', true),
+        },
+      );
       succeeded = report.runs[0]?.succeeded ?? false;
       const file = session.saveReport(report);
       // Whole activity results shown (<= 5000 rows each, capped for the JSONL report only).
@@ -319,7 +357,6 @@ export class SqlPanel {
         connectionGuid: conn.connectionGuid,
         databaseName: conn.databaseName,
         succeeded,
-        durationMs: Date.now() - startedAt,
       });
     }
   }
@@ -332,7 +369,7 @@ export class SqlPanel {
     // CSP allows only nonce'd scripts and the webview's own resource origin for styles — every
     // vendored file below is served from media/ (covered by SqlPanel.show's localResourceRoots).
     return `<!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}'; font-src ${webview.cspSource};">
@@ -346,38 +383,39 @@ export class SqlPanel {
 <body>
   <header class="topbar">
     <div class="brand">
+      <span class="brand-mark"><i class="codicon codicon-database"></i></span>
       <span class="brand-title">GatePulse</span>
-      <span class="brand-sub">SQL via un pipeline Fabric</span>
     </div>
-
-    <div class="tenant-switcher">
-      <i class="codicon codicon-organization"></i>
-      <select id="tenantSelect"></select>
-      <button id="addTenant" class="icon-btn ghost" title="Ajouter un tenant"><i class="codicon codicon-add"></i></button>
-    </div>
-
     <div class="topbar-actions">
-      <button id="showLogs" class="icon-btn ghost" title="Afficher les logs GatePulse"><i class="codicon codicon-output"></i></button>
-      <button id="openSettings" class="icon-btn ghost" title="Paramètres GatePulse"><i class="codicon codicon-gear"></i></button>
+      <button id="showLogs" class="icon-btn ghost" title="Show GatePulse logs"><i class="codicon codicon-output"></i></button>
+      <button id="openSettings" class="icon-btn ghost" title="GatePulse settings"><i class="codicon codicon-gear"></i></button>
     </div>
   </header>
 
   <div id="configProblems" class="banner hidden"></div>
 
-  <section class="card connection-card">
-    <div class="field grow">
-      <label for="connectionGuid">Connexion SQL</label>
+  <section class="context-bar">
+    <div class="ctx">
+      <label for="tenantSelect"><i class="codicon codicon-organization"></i> Tenant</label>
       <div class="with-button">
-        <input id="connectionGuid" spellcheck="false" placeholder="00000000-0000-0000-0000-000000000000">
-        <button id="pickConnection" class="icon-btn secondary" title="Choisir une connexion SQL (gateway ou cloud)"><i class="codicon codicon-plug"></i></button>
+        <select id="tenantSelect"></select>
+        <button id="addTenant" class="icon-btn secondary" title="Add a tenant"><i class="codicon codicon-add"></i></button>
       </div>
     </div>
-    <div class="field">
-      <label for="databaseName">Base de données</label>
+    <div class="ctx">
+      <label for="connectionSelect"><i class="codicon codicon-plug"></i> Connection</label>
+      <div class="with-button">
+        <select id="connectionSelect"></select>
+        <button id="refreshConnections" class="icon-btn secondary" title="Refresh the connection list"><i class="codicon codicon-refresh"></i></button>
+      </div>
+      <input id="connectionGuid" class="hidden" spellcheck="false" placeholder="Connection GUID: 00000000-0000-0000-0000-000000000000">
+    </div>
+    <div class="ctx">
+      <label for="databaseName"><i class="codicon codicon-server"></i> Database</label>
       <div class="with-button">
         <input id="databaseName" list="databaseListOptions" spellcheck="false" placeholder="master">
         <datalist id="databaseListOptions"></datalist>
-        <button id="refreshDatabases" class="icon-btn secondary" title="Rafraîchir la liste des bases"><i class="codicon codicon-refresh"></i></button>
+        <button id="refreshDatabases" class="icon-btn secondary" title="Refresh the database list"><i class="codicon codicon-refresh"></i></button>
       </div>
       <div id="databaseHint" class="field-hint hidden"></div>
     </div>
@@ -385,36 +423,26 @@ export class SqlPanel {
 
   <section class="card editor-card">
     <div class="card-toolbar">
-      <span class="card-title"><i class="codicon codicon-code"></i> Requête SQL</span>
+      <span class="card-title"><i class="codicon codicon-code"></i> Query</span>
+      <span id="status" class="status hidden"><span class="spinner"></span><span id="statusText">Running…</span><span id="elapsed" class="elapsed"></span></span>
       <span class="spacer"></span>
-      <button id="cancel" class="secondary" disabled><i class="codicon codicon-debug-stop"></i> Annuler</button>
+      <button id="cancel" class="secondary" disabled><i class="codicon codicon-debug-stop"></i> Cancel</button>
       <button id="run" class="primary"><i class="codicon codicon-play"></i> Run <kbd>Ctrl+Enter</kbd></button>
     </div>
     <div id="queryEditor" class="query-editor"></div>
   </section>
 
-  <section id="status" class="status hidden">
-    <span class="spinner"></span>
-    <span id="elapsed" class="elapsed">0.0 s</span>
-    <span id="statusText"></span>
-  </section>
-
   <section id="alertBanner" class="alert-banner hidden"></section>
   <section id="error" class="error hidden"></section>
-  <section id="summary" class="hidden"></section>
   <section id="result">
     <div id="resultEmpty" class="empty-state">
-      <i class="codicon codicon-database"></i>
-      <p>Les résultats de ta requête s'afficheront ici.</p>
+      <i class="codicon codicon-table"></i>
+      <p>Your query results will appear here.</p>
     </div>
   </section>
-  <details id="diagnostics" class="card diagnostics hidden">
-    <summary>Diagnostics</summary>
-    <ul id="diagnosticsList" class="checks"></ul>
-  </details>
 
   <details id="history" class="card history hidden">
-    <summary>Historique</summary>
+    <summary>Query history</summary>
     <ul id="historyList"></ul>
   </details>
 
