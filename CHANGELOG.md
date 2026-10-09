@@ -2,12 +2,12 @@
 
 All notable changes to GatePulse are documented here.
 
-## [1.0.1] - unreleased
+## [1.0.1] - 2026-10-09
 
 ### Changed
 - New extension icon: a SQL prompt on a database instead of a pulse line, which suggested monitoring.
 
-## [1.0.0] - unreleased
+## [1.0.0] - 2026-10-09
 
 First product release. GatePulse leaves its proof-of-concept stage and becomes an internal tool for
 data engineers, with the VS Code extension as its only product surface.
