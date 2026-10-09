@@ -43,6 +43,7 @@ type FromWebview =
   | { type: 'cancel' }
   | { type: 'showLogs' }
   | { type: 'openSettings' }
+  | { type: 'openGuide' }
   | { type: 'switchTenant'; alias: string }
   | { type: 'addTenant' }
   | { type: 'refreshConnections' }
@@ -195,6 +196,9 @@ export class SqlPanel {
         return;
       case 'showLogs':
         this.channel.show();
+        return;
+      case 'openGuide':
+        await vscode.commands.executeCommand('gatepulse.openGuide');
         return;
       case 'openSettings':
         await vscode.commands.executeCommand('workbench.action.openSettings', 'gatepulse');
@@ -387,6 +391,7 @@ export class SqlPanel {
       <span class="brand-title">GatePulse</span>
     </div>
     <div class="topbar-actions">
+      <button id="openGuide" class="icon-btn ghost" title="Open the GatePulse guide"><i class="codicon codicon-book"></i></button>
       <button id="showLogs" class="icon-btn ghost" title="Show GatePulse logs"><i class="codicon codicon-output"></i></button>
       <button id="openSettings" class="icon-btn ghost" title="GatePulse settings"><i class="codicon codicon-gear"></i></button>
     </div>

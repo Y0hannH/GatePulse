@@ -596,6 +596,14 @@ export function activate(context: vscode.ExtensionContext): void {
       );
     }),
     vscode.commands.registerCommand('gatepulse.showLogs', () => channel.show()),
+    // The user guide ships inside the extension (media/guide.md); VS Code's built-in Markdown
+    // preview renders it, so it works offline and needs no webview of our own.
+    vscode.commands.registerCommand('gatepulse.openGuide', () =>
+      vscode.commands.executeCommand(
+        'markdown.showPreview',
+        vscode.Uri.joinPath(context.extensionUri, 'media', 'guide.md'),
+      ),
+    ),
     vscode.commands.registerCommand('gatepulse.signOut', async () => {
       await getSession().auth.signOut();
       void vscode.window.showInformationMessage(

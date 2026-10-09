@@ -38,7 +38,7 @@
     "viewsWelcome": [
       {
         "view": "gatepulse.tenantsView",
-        "contents": "No tenant configured.\n\n[$(add) Add a tenant](command:gatepulse.addTenant)\n\nA tenant groups the Entra ID tenant ID and the Fabric workspace where the generic SQL pipeline is provisioned automatically on first run."
+        "contents": "No tenant configured.\n\n[$(add) Add a tenant](command:gatepulse.addTenant)\n\nA tenant groups the Entra ID tenant ID and the Fabric workspace where the generic SQL pipeline is provisioned automatically on first run.\n\n[$(book) Read the guide](command:gatepulse.openGuide)"
       }
     ],
     "commands": [
@@ -113,6 +113,11 @@
         "command": "gatepulse.removeConnection",
         "title": "GatePulse: Remove Connection From Tenant",
         "icon": "$(trash)"
+      },
+      {
+        "command": "gatepulse.openGuide",
+        "title": "GatePulse: Open Documentation",
+        "icon": "$(book)"
       }
     ],
     "menus": {
@@ -169,6 +174,11 @@
           "command": "gatepulse.signOut",
           "when": "view == gatepulse.tenantsView",
           "group": "9_more@3"
+        },
+        {
+          "command": "gatepulse.openGuide",
+          "when": "view == gatepulse.tenantsView",
+          "group": "9_more@0"
         }
       ],
       "view/item/context": [

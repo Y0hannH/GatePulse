@@ -126,6 +126,7 @@
     inputs.connectionGuid.value = connectionSelect.value;
     onConnectionChanged();
   });
+  $('openGuide').addEventListener('click', () => vscode.postMessage({ type: 'openGuide' }));
   $('showLogs').addEventListener('click', (e) => (e.preventDefault(), vscode.postMessage({ type: 'showLogs' })));
   $('openSettings').addEventListener('click', (e) => (e.preventDefault(), vscode.postMessage({ type: 'openSettings' })));
   tenantSelect.addEventListener('change', () => vscode.postMessage({ type: 'switchTenant', alias: tenantSelect.value }));
