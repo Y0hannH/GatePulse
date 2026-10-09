@@ -9,3 +9,7 @@ out/
 logs/
 .gatepulse/
 gatepulse.config.json
+
+# Claude Code files (local only)
+CLAUDE.md
+.claude/
