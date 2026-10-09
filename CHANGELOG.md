@@ -2,6 +2,11 @@
 
 All notable changes to GatePulse are documented here.
 
+## [1.0.1] - unreleased
+
+### Changed
+- New extension icon: a SQL prompt on a database instead of a pulse line, which suggested monitoring.
+
 ## [1.0.0] - unreleased
 
 First product release. GatePulse leaves its proof-of-concept stage and becomes an internal tool for
