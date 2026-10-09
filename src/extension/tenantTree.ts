@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 
 import type { TenantEntry } from '../core/config';
+import { tenantConnections } from '../core/config';
 import type { ColumnInfo, SchemaObject } from '../core/runQuery';
 
 export class TenantTreeItem extends vscode.TreeItem {
@@ -26,6 +27,22 @@ export class TenantTreeItem extends vscode.TreeItem {
     this.contextValue = isActive ? 'tenant-active' : 'tenant-inactive';
     // Click = same one-step action as the sidebar's purpose: switch to this tenant and open the panel.
     this.command = { command: 'gatepulse.openTenant', title: 'Open', arguments: [tenant.alias] };
+  }
+}
+
+export class ConnectionTreeItem extends vscode.TreeItem {
+  constructor(
+    public readonly tenantAlias: string,
+    public readonly connectionGuid: string,
+    public readonly connectionName: string | undefined,
+    public readonly isDefault: boolean,
+  ) {
+    super(connectionName ?? connectionGuid, vscode.TreeItemCollapsibleState.Collapsed);
+    this.description = isDefault ? 'default' : undefined;
+    this.tooltip = `${connectionName ?? 'Connection'}
+${connectionGuid}`;
+    this.iconPath = new vscode.ThemeIcon('plug');
+    this.contextValue = isDefault ? 'connection-default' : 'connection';
   }
 }
 
@@ -99,6 +116,7 @@ export class MessageTreeItem extends vscode.TreeItem {
 
 export type GatePulseTreeItem =
   | TenantTreeItem
+  | ConnectionTreeItem
   | DatabaseTreeItem
   | SchemaTreeItem
   | TableTreeItem
@@ -119,6 +137,7 @@ export class TenantTreeProvider implements vscode.TreeDataProvider<GatePulseTree
     private readonly getTenants: () => TenantEntry[],
     private readonly getActiveAlias: () => string,
     private readonly getConnectionName: (guid: string | undefined) => string | undefined,
+    private readonly ensureConnectionNames: () => Promise<void>,
     private readonly ensureActiveTenant: (alias: string) => Promise<void>,
     private readonly listDatabasesFor: (connectionGuid: string) => Promise<string[]>,
     private readonly listObjectsFor: (connectionGuid: string, databaseName: string) => Promise<SchemaObject[]>,
@@ -147,7 +166,10 @@ export class TenantTreeProvider implements vscode.TreeDataProvider<GatePulseTree
     }
 
     if (element instanceof TenantTreeItem) {
-      return this.getDatabases(element.tenant);
+      return this.getConnectionItems(element.tenant);
+    }
+    if (element instanceof ConnectionTreeItem) {
+      return this.getDatabases(element);
     }
     if (element instanceof DatabaseTreeItem) {
       return this.getSchemas(element);
@@ -174,22 +196,31 @@ export class TenantTreeProvider implements vscode.TreeDataProvider<GatePulseTree
     return [];
   }
 
-  private async getDatabases(tenant: TenantEntry): Promise<GatePulseTreeItem[]> {
+  /** Tenant children: its connections (default first), named when Fabric has told us the name. */
+  private async getConnectionItems(tenant: TenantEntry): Promise<GatePulseTreeItem[]> {
     try {
       await this.ensureActiveTenant(tenant.alias);
+      await this.ensureConnectionNames();
     } catch (err) {
       return [new MessageTreeItem(`Error: ${(err as Error).message}`, 'warning')];
     }
-    const connectionGuid = tenant.connectionGuid;
-    if (!connectionGuid) {
-      const hint = new MessageTreeItem(
-        'No default connection — click to pick one',
-        'info',
-      );
-      hint.command = { command: 'gatepulse.pickConnection', title: 'Pick Connection' };
+    const connections = tenantConnections(tenant);
+    if (connections.length === 0) {
+      const hint = new MessageTreeItem('No connection — click to add one', 'info');
+      hint.command = { command: 'gatepulse.addConnection', title: 'Add Connection', arguments: [{ tenant }] };
       return [hint];
     }
-    const extras = tenant.extraDatabases ?? [];
+    return connections.map(
+      (c) =>
+        new ConnectionTreeItem(tenant.alias, c.id, c.name ?? this.getConnectionName(c.id), c.isDefault),
+    );
+  }
+
+  private async getDatabases(conn: ConnectionTreeItem): Promise<GatePulseTreeItem[]> {
+    const tenant = this.getTenants().find((t) => t.alias === conn.tenantAlias);
+    const extras = (tenant ? tenantConnections(tenant) : []).find(
+      (c) => c.id.toLowerCase() === conn.connectionGuid.toLowerCase(),
+    )?.extraDatabases ?? [];
     const items = (listed: string[]) => {
       const seen = new Set(listed.map((n) => n.toLowerCase()));
       return [
@@ -197,10 +228,10 @@ export class TenantTreeProvider implements vscode.TreeDataProvider<GatePulseTree
         ...extras.filter((e) => !seen.has(e.toLowerCase())).map((name) => ({ name, manual: true })),
       ]
         .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
-        .map((d) => new DatabaseTreeItem(tenant.alias, connectionGuid, d.name, d.manual));
+        .map((d) => new DatabaseTreeItem(conn.tenantAlias, conn.connectionGuid, d.name, d.manual));
     };
     try {
-      const result = items(await this.listDatabasesFor(connectionGuid));
+      const result = items(await this.listDatabasesFor(conn.connectionGuid));
       return result.length ? result : [new MessageTreeItem('No database found', 'info')];
     } catch (err) {
       // Listing can fail (no access to master...) — databases added by hand stay usable regardless.

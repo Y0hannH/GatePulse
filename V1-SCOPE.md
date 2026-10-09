@@ -532,11 +532,16 @@ priorité d'affichage change.
       connexion par défaut`, et la ligne tenant de l'arbre l'affiche en description. Les noms sont
       mémorisés dans `globalState` (`gatepulse.connectionNames`, GUID → nom) pour pouvoir nommer la
       connexion d'un tenant non actif, dont le token ne peut pas lister maintenant.
-    - **Base non listée : `gatepulse.tenants[].extraDatabases`.** Une base interrogeable mais absente de
-      `sys.databases` pour ce login s'ajoute via le bouton `+` de la ligne tenant (commande
-      `GatePulse: Add Database to Tenant`, `Global`) ; elle apparaît dans l'arbre (« added manually »,
-      retirable en clic droit) et dans la liste des bases du panel (si la connexion est celle par
-      défaut du tenant). Elle reste visible même si le listing des bases échoue.
+    - **Arbre de gauche : Tenant → Connexion → Base → Schéma → Table/Vue → Colonne** (précisé le
+      2026-10-09, première lecture « base au niveau tenant » corrigée par Yohann). Un tenant peut avoir
+      plusieurs connexions : `gatepulse.tenants[].connectionGuid` (défaut) + `connections[]`
+      (`{id, name?, extraDatabases?}`), fusionnées par `tenantConnections()` (`config.ts`). Bouton **`+`
+      sur le tenant** = `Add Connection to Tenant` (QuickPick des connexions Fabric, ou GUID à la main ;
+      la première devient la défaut) ; **`+` sur la connexion** = `Add Database to Tenant` (base absente
+      de `sys.databases` pour ce login, stockée dans `connections[].extraDatabases`, affichée « added
+      manually », retirable en clic droit, visible même si le listing échoue). Clic droit sur une
+      connexion : `Remove Connection From Tenant`. `extraDatabases` au niveau tenant (première version)
+      reste lu comme extras de la connexion par défaut, et est vidé à la première modification.
     - **Bloc rapport/timings supprimé** : plus de résumé (durée totale, métriques, chemin du rapport),
       plus de section Diagnostics (annule le point 10 : rien à masquer puisqu'elle n'existe plus), plus
       de durée dans l'historique ni dans l'en-tête des résultats. Reste : un indicateur « Running… »

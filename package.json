@@ -103,6 +103,16 @@
         "command": "gatepulse.removeDatabase",
         "title": "GatePulse: Remove Manually Added Database",
         "icon": "$(trash)"
+      },
+      {
+        "command": "gatepulse.addConnection",
+        "title": "GatePulse: Add Connection to Tenant",
+        "icon": "$(add)"
+      },
+      {
+        "command": "gatepulse.removeConnection",
+        "title": "GatePulse: Remove Connection From Tenant",
+        "icon": "$(trash)"
       }
     ],
     "menus": {
@@ -117,6 +127,10 @@
         },
         {
           "command": "gatepulse.removeDatabase",
+          "when": "false"
+        },
+        {
+          "command": "gatepulse.removeConnection",
           "when": "false"
         }
       ],
@@ -164,19 +178,34 @@
           "group": "1_actions"
         },
         {
-          "command": "gatepulse.addDatabase",
+          "command": "gatepulse.removeDatabase",
+          "when": "view == gatepulse.tenantsView && viewItem == database-manual",
+          "group": "1_actions"
+        },
+        {
+          "command": "gatepulse.addConnection",
           "when": "view == gatepulse.tenantsView && viewItem =~ /^tenant-/",
           "group": "inline@1"
         },
         {
           "command": "gatepulse.addDatabase",
+          "when": "view == gatepulse.tenantsView && viewItem =~ /^connection/",
+          "group": "inline@1"
+        },
+        {
+          "command": "gatepulse.addConnection",
           "when": "view == gatepulse.tenantsView && viewItem =~ /^tenant-/",
           "group": "1_actions"
         },
         {
-          "command": "gatepulse.removeDatabase",
-          "when": "view == gatepulse.tenantsView && viewItem == database-manual",
+          "command": "gatepulse.addDatabase",
+          "when": "view == gatepulse.tenantsView && viewItem =~ /^connection/",
           "group": "1_actions"
+        },
+        {
+          "command": "gatepulse.removeConnection",
+          "when": "view == gatepulse.tenantsView && viewItem =~ /^connection/",
+          "group": "2_remove"
         }
       ]
     },
@@ -229,7 +258,34 @@
                 "items": {
                   "type": "string"
                 },
-                "description": "Optional: databases reachable through this tenant's default connection that sys.databases doesn't list for your login. Shown in the sidebar tree and the panel's database list. Easiest to add with the + button on the tenant row."
+                "description": "Legacy: manual databases of the default connection. New ones are stored under connections[].extraDatabases."
+              },
+              "connections": {
+                "type": "array",
+                "description": "Optional: further connections to browse under this tenant (besides connectionGuid). Add them with the + button on the tenant row.",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "id"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "Fabric connection GUID."
+                    },
+                    "name": {
+                      "type": "string",
+                      "description": "Optional display name."
+                    },
+                    "extraDatabases": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Databases reachable through this connection that sys.databases does not list for your login. Add them with the + button on the connection row."
+                    }
+                  }
+                }
               }
             }
           }

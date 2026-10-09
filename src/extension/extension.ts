@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 
 import type { AuthFlow, ParameterNames, ParameterPayloadFormat, TenantEntry } from '../core/config';
-import { buildConfigForTenant, isGuid } from '../core/config';
+import { buildConfigForTenant, isGuid, tenantConnections } from '../core/config';
 import type { FabricConnection } from '../core/fabricClient';
 import { isSupportedSqlConnection } from '../core/fabricClient';
 import type { LogEntry, LogSink } from '../core/logger';
@@ -22,7 +22,7 @@ import type { Session } from '../core/session';
 import { createSession } from '../core/session';
 import type { PanelServices } from './panel';
 import { SqlPanel } from './panel';
-import type { DatabaseTreeItem, TableTreeItem, TenantTreeItem } from './tenantTree';
+import type { ConnectionTreeItem, DatabaseTreeItem, TableTreeItem } from './tenantTree';
 import { TenantTreeProvider } from './tenantTree';
 
 /** Resolves and caches the pipeline id on `session.cfg` — shared by a query run, the panel's
@@ -115,6 +115,26 @@ export function readTenants(): TenantEntry[] {
       typeof (t as TenantEntry).tenantId === 'string' &&
       typeof (t as TenantEntry).workspaceId === 'string',
   );
+}
+
+/** Rewrites one connection's manual databases. The default connection's legacy tenant-level list is
+ *  folded in and cleared so it can't resurrect a database that was just removed. */
+async function updateConnectionExtras(
+  tenant: TenantEntry,
+  connectionGuid: string,
+  change: (current: string[]) => string[],
+): Promise<void> {
+  const same = (id: string | undefined) => id?.toLowerCase() === connectionGuid.toLowerCase();
+  const current = tenantConnections(tenant).find((c) => same(c.id))?.extraDatabases ?? [];
+  const next = change(current);
+  const connections = [...(tenant.connections ?? [])];
+  const i = connections.findIndex((c) => same(c.id));
+  if (i >= 0) connections[i] = { ...connections[i], extraDatabases: next };
+  else connections.push({ id: connectionGuid, extraDatabases: next });
+  await updateTenant(tenant.alias, {
+    connections,
+    ...(same(tenant.connectionGuid) ? { extraDatabases: [] } : {}),
+  });
 }
 
 const ACTIVE_TENANT_KEY = 'gatepulse.activeTenantAlias';
@@ -261,11 +281,12 @@ export function activate(context: vscode.ExtensionContext): void {
     if (changed) void context.globalState.update(CONNECTION_NAMES_KEY, connectionNames);
   };
 
-  /** Listed databases + the ones the user added by hand for this tenant (see `extraDatabases`). */
+  /** Listed databases + the ones the user added by hand under this connection of the active tenant. */
   const withExtraDatabases = (names: string[], connectionGuid: string): string[] => {
     const tenant = getActiveTenant(context, readTenants());
     const extras =
-      tenant.connectionGuid?.toLowerCase() === connectionGuid.toLowerCase() ? (tenant.extraDatabases ?? []) : [];
+      tenantConnections(tenant).find((c) => c.id.toLowerCase() === connectionGuid.toLowerCase())
+        ?.extraDatabases ?? [];
     const seen = new Set(names.map((n) => n.toLowerCase()));
     return [...names, ...extras.filter((e) => !seen.has(e.toLowerCase()))].sort((a, b) =>
       a.localeCompare(b, undefined, { sensitivity: 'base' }),
@@ -402,6 +423,7 @@ export function activate(context: vscode.ExtensionContext): void {
     readTenants,
     getActiveTenantAlias,
     getConnectionName,
+    async () => void (await getConnections()),
     ensureActiveTenantForTree,
     (connectionGuid) => getDatabases(connectionGuid, '', false),
     getSchemaObjects,
@@ -482,36 +504,96 @@ export function activate(context: vscode.ExtensionContext): void {
       void context.globalState.update(CACHE_STORAGE_KEY, undefined);
       tenantTree.refresh();
     }),
-    // Databases `sys.databases` doesn't list for this login (queryable all the same) can be added to
-    // the tenant by hand; they then show up in the tree and in the panel's database list.
-    vscode.commands.registerCommand('gatepulse.addDatabase', async (item?: TenantTreeItem) => {
+    // "+" on a tenant row: attach another connection to browse under it.
+    vscode.commands.registerCommand('gatepulse.addConnection', async (item?: { tenant: TenantEntry }) => {
       const tenant = item?.tenant ?? getActiveTenant(context, readTenants());
       if (!tenant.alias) {
         void vscode.window.showWarningMessage('GatePulse: add a tenant first.');
         return;
       }
+      if (tenant.alias !== getActiveTenantAlias()) await switchToTenant(tenant.alias);
+      const already = new Set(tenantConnections(tenant).map((c) => c.id.toLowerCase()));
+      const listed = (await getConnections()).filter((c) => !already.has(c.id.toLowerCase()));
+      const MANUAL = 'manual';
+      const picked = await vscode.window.showQuickPick(
+        [
+          ...listed.map((c) => ({
+            label: c.displayName,
+            description: c.id,
+            detail: c.gatewayId ? 'Gateway' : c.connectivityType,
+            id: c.id as string,
+            name: c.displayName as string | undefined,
+          })),
+          { label: '$(edit) Enter a connection GUID…', description: '', detail: undefined, id: MANUAL, name: undefined },
+        ],
+        { placeHolder: `GatePulse: add a connection to "${tenant.alias}"` },
+      );
+      if (!picked) return;
+      let id = picked.id;
+      let name = picked.name;
+      if (id === MANUAL) {
+        id =
+          (
+            await vscode.window.showInputBox({
+              prompt: 'GatePulse: connection GUID',
+              placeHolder: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
+              ignoreFocusOut: true,
+              validateInput: (v) =>
+                !isGuid(v.trim())
+                  ? 'GUID expected'
+                  : already.has(v.trim().toLowerCase())
+                    ? 'This connection is already on the tenant'
+                    : null,
+            })
+          )?.trim() ?? '';
+        if (!id) return;
+        name = getConnectionName(id);
+      }
+      const patch: Partial<TenantEntry> = {
+        connections: [...(tenant.connections ?? []), { id, ...(name ? { name } : {}) }],
+      };
+      if (!tenant.connectionGuid) patch.connectionGuid = id; // first connection becomes the default
+      await updateTenant(tenant.alias, patch);
+    }),
+    vscode.commands.registerCommand('gatepulse.removeConnection', async (item?: ConnectionTreeItem) => {
+      const tenant = item && readTenants().find((t) => t.alias === item.tenantAlias);
+      if (!item || !tenant) return;
+      const same = (id: string | undefined) => id?.toLowerCase() === item.connectionGuid.toLowerCase();
+      await updateTenant(tenant.alias, {
+        connections: (tenant.connections ?? []).filter((c) => !same(c.id)),
+        ...(same(tenant.connectionGuid) ? { connectionGuid: '', extraDatabases: [] } : {}),
+      });
+    }),
+    // "+" on a connection row: databases `sys.databases` does not list for this login (queryable all
+    // the same) are added by hand, under that connection.
+    vscode.commands.registerCommand('gatepulse.addDatabase', async (item?: ConnectionTreeItem) => {
+      const tenant = readTenants().find((t) => t.alias === (item?.tenantAlias ?? getActiveTenantAlias()));
+      const connection =
+        tenant &&
+        tenantConnections(tenant).find((c) =>
+          item ? c.id.toLowerCase() === item.connectionGuid.toLowerCase() : c.isDefault,
+        );
+      if (!tenant || !connection) {
+        void vscode.window.showWarningMessage('GatePulse: pick a connection first.');
+        return;
+      }
       const name = (
         await vscode.window.showInputBox({
-          prompt: `GatePulse: database to add to "${tenant.alias}"`,
+          prompt: `GatePulse: database to add under "${connection.name ?? getConnectionName(connection.id) ?? connection.id}"`,
           placeHolder: 'MyDatabase',
           ignoreFocusOut: true,
           validateInput: (v) => (v.trim() ? null : 'Name required'),
         })
       )?.trim();
-      if (!name) return;
-      const current = tenant.extraDatabases ?? [];
-      if (current.some((d) => d.toLowerCase() === name.toLowerCase())) return;
-      await updateTenant(tenant.alias, { extraDatabases: [...current, name] });
+      if (!name || connection.extraDatabases.some((d) => d.toLowerCase() === name.toLowerCase())) return;
+      await updateConnectionExtras(tenant, connection.id, (cur) => [...cur, name]);
     }),
     vscode.commands.registerCommand('gatepulse.removeDatabase', async (item?: DatabaseTreeItem) => {
-      if (!item) return;
-      const tenant = readTenants().find((t) => t.alias === item.tenantAlias);
-      if (!tenant) return;
-      await updateTenant(tenant.alias, {
-        extraDatabases: (tenant.extraDatabases ?? []).filter(
-          (d) => d.toLowerCase() !== item.databaseName.toLowerCase(),
-        ),
-      });
+      const tenant = item && readTenants().find((t) => t.alias === item.tenantAlias);
+      if (!item || !tenant) return;
+      await updateConnectionExtras(tenant, item.connectionGuid, (cur) =>
+        cur.filter((d) => d.toLowerCase() !== item.databaseName.toLowerCase()),
+      );
     }),
     vscode.commands.registerCommand('gatepulse.showLogs', () => channel.show()),
     vscode.commands.registerCommand('gatepulse.signOut', async () => {

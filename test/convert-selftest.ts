@@ -5,6 +5,7 @@
  *
  *   npx tsx test/convert-selftest.ts
  */
+import { tenantConnections } from '../src/core/config';
 import { convertedColumnExpression, rewriteForUnsupportedTypes } from '../src/core/runQuery';
 import type { ScenarioContext } from '../src/core/scenarios';
 
@@ -96,6 +97,23 @@ void (async () => {
     }
     expect('duplicate result column names are refused', threw, true);
   }
+
+  console.log('--- tenantConnections ---');
+  const tc = tenantConnections({
+    alias: 'a',
+    tenantId: 't',
+    workspaceId: 'w',
+    connectionGuid: 'AAA',
+    extraDatabases: ['legacyDb'],
+    connections: [
+      { id: 'aaa', name: 'Gateway A', extraDatabases: ['Hidden', 'legacydb'] },
+      { id: 'bbb' },
+    ],
+  });
+  expect('default first, deduplicated by GUID', tc.map((c) => c.id), ['AAA', 'bbb']);
+  expect('default keeps its name from the connections entry', tc[0].name, 'Gateway A');
+  expect('extras merged, case-insensitive dedupe', tc[0].extraDatabases, ['legacyDb', 'Hidden']);
+  expect('only the default is flagged', tc.map((c) => c.isDefault), [true, false]);
 
   if (failures) {
     console.error(`\n${failures} check(s) failed`);

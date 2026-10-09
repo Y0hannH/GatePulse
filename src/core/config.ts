@@ -50,9 +50,43 @@ export interface TenantEntry {
   connectionGuid?: string;
   /** Optional pre-fill for the panel. */
   databaseName?: string;
-  /** Optional: databases that exist behind connectionGuid but that sys.databases doesn't list for
-   *  this login — added by hand, merged into the sidebar tree and the panel's database list. */
+  /** Legacy (first manual-database version): extras of the default connection. Still honoured;
+   *  new ones are written under `connections[].extraDatabases`. */
   extraDatabases?: string[];
+  /** Optional: further connections to browse under this tenant, besides the default connectionGuid. */
+  connections?: TenantConnection[];
+}
+
+export interface TenantConnection {
+  id: string;
+  /** Display name; falls back to the name Fabric reports for this GUID. */
+  name?: string;
+  /** Databases reachable through this connection that sys.databases doesn't list for the login. */
+  extraDatabases?: string[];
+}
+
+/** A tenant's connections as the sidebar shows them: the default `connectionGuid` first, then the
+ *  `connections` entries, deduplicated by GUID (extras merged, legacy tenant-level extras attached
+ *  to the default one). */
+export function tenantConnections(
+  t: TenantEntry,
+): { id: string; name?: string; extraDatabases: string[]; isDefault: boolean }[] {
+  const out: { id: string; name?: string; extraDatabases: string[]; isDefault: boolean }[] = [];
+  const add = (id: string, name: string | undefined, extras: string[], isDefault: boolean) => {
+    const existing = out.find((c) => c.id.toLowerCase() === id.toLowerCase());
+    if (existing) {
+      existing.name ??= name;
+      existing.isDefault ||= isDefault;
+      for (const e of extras) if (!existing.extraDatabases.some((x) => x.toLowerCase() === e.toLowerCase())) existing.extraDatabases.push(e);
+      return;
+    }
+    out.push({ id, name, extraDatabases: [...extras], isDefault });
+  };
+  if (t.connectionGuid) add(t.connectionGuid, undefined, t.extraDatabases ?? [], true);
+  for (const c of t.connections ?? []) {
+    if (c && typeof c.id === 'string' && c.id) add(c.id, c.name, c.extraDatabases ?? [], false);
+  }
+  return out;
 }
 
 export interface GatePulseConfig {
