@@ -353,7 +353,7 @@
         "gatepulse.pollIntervalMs": {
           "type": "number",
           "default": 2000,
-          "description": "Job status polling interval (ms). Kept short on purpose: it bounds latency measurement precision."
+          "description": "How often the job status is checked while a query runs (ms). Lower = results show up sooner after the job ends, at the cost of more API calls."
         },
         "gatepulse.timeoutMs": {
           "type": "number",
@@ -408,82 +408,6 @@
           "type": "boolean",
           "default": true,
           "description": "Keep discovered databases/tables/views/columns (sidebar tree + editor autocomplete) cached across VS Code restarts, written to this machine's local extension storage. Turn off to keep the cache in memory only for the current session — nothing written to disk, cleared on reload. \"GatePulse: Refresh Schema Tree\" always forces a fresh fetch regardless of this setting."
-        },
-        "gatepulse.validation.concurrency": {
-          "type": "number",
-          "default": 3,
-          "description": "Number of parallel runs for the concurrency test (P3)."
-        },
-        "gatepulse.validation.alternateConnectionGuid": {
-          "type": "string",
-          "default": "",
-          "description": "Second gateway connection GUID for the connection swap test (P4)."
-        },
-        "gatepulse.validation.alternateDatabaseName": {
-          "type": "string",
-          "default": "",
-          "description": "Database name used with the alternate connection (P4)."
-        },
-        "gatepulse.validation.referenceUiJobInstanceId": {
-          "type": "string",
-          "default": "",
-          "description": "Optional: job instance ID of a run triggered manually from the Fabric UI, used to diff the Lookup input against an API-triggered run (P4)."
-        },
-        "gatepulse.validation.identityQuery": {
-          "type": "string",
-          "default": "SELECT @@SERVERNAME AS server_name, DB_NAME() AS database_name, SUSER_SNAME() AS login_name",
-          "description": "Query revealing which server/database answered (P4). T-SQL by default."
-        },
-        "gatepulse.validation.markerQueryTemplate": {
-          "type": "string",
-          "default": "SELECT '{{tag}}' AS run_tag, CURRENT_TIMESTAMP AS server_time",
-          "description": "Query template for the concurrency test (P3). {{tag}} is replaced by a unique per-run tag."
-        },
-        "gatepulse.validation.rowCountQueryTemplate": {
-          "type": "string",
-          "default": "SELECT TOP ({{n}}) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS i FROM sys.all_objects a CROSS JOIN sys.all_objects b",
-          "description": "Query template returning exactly {{n}} rows, for the row cap test (P1). T-SQL by default."
-        },
-        "gatepulse.validation.rowCapSizes": {
-          "type": "array",
-          "items": {
-            "type": "number"
-          },
-          "default": [
-            100,
-            5000,
-            5001,
-            7500
-          ],
-          "description": "Row counts requested by the row cap test."
-        },
-        "gatepulse.validation.latencyQuery": {
-          "type": "string",
-          "default": "SELECT 1 AS one",
-          "description": "Simple query used by the latency test (P2)."
-        },
-        "gatepulse.validation.latencyIterations": {
-          "type": "number",
-          "default": 3,
-          "description": "Sequential iterations for the latency test (P2)."
-        },
-        "gatepulse.validation.sizeTestRows": {
-          "type": "array",
-          "items": {
-            "type": "number"
-          },
-          "default": [
-            500,
-            900,
-            1100,
-            2000
-          ],
-          "description": "Row counts for the payload size test (4 MB limit), with ~4 KB rows."
-        },
-        "gatepulse.validation.sizeQueryTemplate": {
-          "type": "string",
-          "default": "SELECT TOP ({{n}}) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS i, REPLICATE(CAST('x' AS varchar(max)), 4000) AS pad FROM sys.all_objects a CROSS JOIN sys.all_objects b",
-          "description": "Query returning {{n}} wide rows for the size test. T-SQL by default."
         },
         "gatepulse.autoConvertUnsupportedColumns": {
           "type": "boolean",

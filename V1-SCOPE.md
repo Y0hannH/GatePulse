@@ -630,3 +630,5 @@ l'implémentation, pas un doute de conception.
    éditeur CodeMirror, liste des bases par connexion, ajoutés le 2026-09-25) ; la vérification
    manuelle contre un vrai tenant Fabric reste le prochain jalon avant de considérer la V1
    utilisable en pratique.
+
+**2026-10-09 — réglages `gatepulse.validation.*` retirés** (12 réglages du PoC : requêtes de test, tailles, itérations). Ils n'alimentaient que les scénarios P1-P4 du CLI gelé, qui lit son propre `gatepulse.config.json` ; l'extension ne les lit plus. `package.json` n'expose plus que les réglages du produit.

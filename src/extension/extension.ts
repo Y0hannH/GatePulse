@@ -68,7 +68,6 @@ class OutputChannelSink implements LogSink {
 /** Everything settings-based except tenant identity/targeting — merged with one TenantEntry by buildConfigForTenant. */
 function readGlobalConfig() {
   const c = vscode.workspace.getConfiguration('gatepulse');
-  const v = (key: string) => c.get(`validation.${key}`);
   return {
     clientId: c.get<string>('clientId')?.trim(),
     authFlow: c.get<AuthFlow>('authFlow'),
@@ -78,20 +77,6 @@ function readGlobalConfig() {
     activityNames: c.get<string[]>('activityNames'),
     parameterPayloadFormat: c.get<ParameterPayloadFormat>('parameterPayloadFormat'),
     parameterNames: c.get<Partial<ParameterNames>>('parameterNames'),
-    validation: {
-      concurrency: v('concurrency') as number,
-      alternateConnectionGuid: (v('alternateConnectionGuid') as string)?.trim(),
-      alternateDatabaseName: (v('alternateDatabaseName') as string)?.trim(),
-      referenceUiJobInstanceId: (v('referenceUiJobInstanceId') as string)?.trim(),
-      identityQuery: v('identityQuery') as string,
-      markerQueryTemplate: v('markerQueryTemplate') as string,
-      rowCountQueryTemplate: v('rowCountQueryTemplate') as string,
-      rowCapSizes: v('rowCapSizes') as number[],
-      latencyQuery: v('latencyQuery') as string,
-      latencyIterations: v('latencyIterations') as number,
-      sizeTestRows: v('sizeTestRows') as number[],
-      sizeQueryTemplate: v('sizeQueryTemplate') as string,
-    },
   };
 }
 

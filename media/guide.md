@@ -197,8 +197,6 @@ An array, normally edited through the **+** buttons, but plain JSON works too:
 | `gatepulse.parameterPayloadFormat` | `executionData` | How parameters are sent to the job API. |
 | `gatepulse.logDirectory` | empty | Where JSONL logs and reports are written (empty = extension storage). |
 
-The `gatepulse.validation.*` settings belong to the archived validation CLI and have no effect on the extension's daily use.
-
 ## 9. Commands reference
 
 All commands are in the Command Palette under **GatePulse:**.

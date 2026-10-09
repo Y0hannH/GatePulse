@@ -37,6 +37,8 @@ data engineers, with the VS Code extension as its only product surface.
 - Identifiers in generated SQL are escaped; webview messages are handled defensively.
 
 ### Removed from the product
+- The twelve `gatepulse.validation.*` settings (PoC test queries, sizes and iteration counts): they only
+  fed the archived CLI scenarios, which read their own `gatepulse.config.json`.
 - The validation CLI (scenarios P1–P4) is archived and frozen; it is no longer shipped in the
   extension package. Its findings are kept in `docs/POC-VALIDATION.md`.
 
