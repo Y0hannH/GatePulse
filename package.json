@@ -1,11 +1,33 @@
 {
-  "name": "gatepulse-fabric-sql-demo",
-  "displayName": "GatePulse — SQL via Fabric Pipeline (demo)",
-  "description": "Demo: run ad hoc SQL through a Microsoft Fabric pipeline (Lookup/Script activity), using any Fabric-authorized SQL connection — gateway-routed (on-prem / IP-filtered) or cloud — driven only by the Fabric REST API.",
-  "version": "0.1.0",
-  "private": true,
+  "name": "gatepulse",
+  "displayName": "GatePulse — SQL via Fabric Pipeline",
+  "description": "Run ad hoc SQL from VS Code on any Microsoft Fabric-authorized connection — gateway (on-prem / IP-filtered) or cloud — through a generic Fabric pipeline, driven only by the Fabric REST API.",
+  "version": "1.0.0",
   "publisher": "gatepulse",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Y0hannH/GatePulse.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Y0hannH/GatePulse/issues"
+  },
+  "homepage": "https://github.com/Y0hannH/GatePulse#readme",
+  "keywords": [
+    "microsoft fabric",
+    "fabric",
+    "sql",
+    "sql server",
+    "data pipeline",
+    "gateway",
+    "data engineering",
+    "azure",
+    "t-sql"
+  ],
+  "galleryBanner": {
+    "color": "#1f1f1f",
+    "theme": "dark"
+  },
   "engines": {
     "vscode": "^1.90.0",
     "node": ">=20"
@@ -501,6 +523,12 @@
   },
   "dependencies": {
     "@azure/identity": "^4.13.3",
-    "@evolve-data/pulse-core": "file:../pulse-shared"
+    "@evolve-data/pulse-core": "git+https://github.com/Y0hannH/pulse-shared.git#43ecb998eaa940a12c5a98c01081942cf38b708b"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": true
   }
 }

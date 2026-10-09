@@ -28,6 +28,9 @@ gatepulse.config*.json
 # Dependencies (bundled by esbuild)
 node_modules/**
 
+# Archived validation CLI bundle: built for `npm run validate`, not part of the product
+dist/cli.js
+
 # Maps (not needed in production)
 **/*.map
 

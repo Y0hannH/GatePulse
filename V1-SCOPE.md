@@ -48,7 +48,7 @@ la correction du filtrage au point 3 ci-dessous.
 - `publisher: "gatepulse"` et `private: true` restent en l'état tant qu'aucune distribution externe
   n'est décidée (réaligner alors sur `evolve-data`). Licence **MIT** depuis le 2026-10-09 (repo GitHub
   `Y0hannH/GatePulse`, `LICENSE` à la racine, `package.json` aligné) — le remote existe désormais.
-- Le nom de package `gatepulse-fabric-sql-demo` doit perdre le suffixe `-demo` (V1, plus une démo) —
+- ~~Le nom de package `gatepulse-fabric-sql-demo` doit perdre le suffixe `-demo`~~ — fait le 2026-10-09 (`gatepulse`, v1.0.0). Note d'origine : (V1, plus une démo) —
   à faire au moment du chantier de renommage, pas isolément.
 
 ## Sort du périmètre produit V1
