@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#16294f"/>
+      <stop offset="1" stop-color="#0b1530"/>
+    </linearGradient>
+    <linearGradient id="db" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2dd4ee"/>
+      <stop offset="1" stop-color="#3b6ff0"/>
+    </linearGradient>
+    <linearGradient id="top" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8aeaf8"/>
+      <stop offset="1" stop-color="#5aa0ff"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+  <circle cx="128" cy="128" r="118" fill="none" stroke="#ffffff" stroke-opacity="0.05" stroke-width="2"/>
+  <!-- database cylinder -->
+  <path d="M64 78v100c0 17.7 28 32 64 32s64-14.3 64-32V78z" fill="url(#db)"/>
+  <ellipse cx="128" cy="78" rx="64" ry="24" fill="url(#top)"/>
+  <path d="M64 118c0 17.7 28 32 64 32s64-14.3 64-32" fill="none" stroke="#0b1530" stroke-opacity="0.35" stroke-width="5"/>
+  <!-- pulse line -->
+  <polyline points="40,146 92,146 110,104 136,186 154,132 166,146 216,146" fill="none" stroke="#0b1530" stroke-opacity="0.45" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+  <polyline points="40,146 92,146 110,104 136,186 154,132 166,146 216,146" fill="none" stroke="#ffffff" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -31,6 +31,9 @@ node_modules/**
 # Archived validation CLI bundle: built for `npm run validate`, not part of the product
 dist/cli.js
 
+# Marketplace icon source (the shipped icon is the PNG)
+resources/icon-marketplace.svg
+
 # Maps (not needed in production)
 **/*.map
 

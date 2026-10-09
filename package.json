@@ -4,6 +4,7 @@
   "description": "Run ad hoc SQL from VS Code on any Microsoft Fabric-authorized connection — gateway (on-prem / IP-filtered) or cloud — through a generic Fabric pipeline, driven only by the Fabric REST API.",
   "version": "1.0.0",
   "publisher": "gatepulse",
+  "icon": "resources/icon.png",
   "license": "MIT",
   "repository": {
     "type": "git",
