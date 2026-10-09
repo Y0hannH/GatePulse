@@ -45,8 +45,9 @@ la correction du filtrage au point 3 ci-dessous.
   (tsconfig, eslint flat config, scripts npm communs — déjà fait depuis la bascule `dist/` +
   `pulse-core`). **Pas de remote GitHub pour l'instant**, pas de Marketplace : distribution interne
   via `.vsix` comme aujourd'hui.
-- `publisher: "gatepulse"`, `private: true`, `UNLICENSED` restent en l'état tant que le repo reste
-  local. Réaligner sur `evolve-data` seulement si/quand une distribution externe est décidée.
+- `publisher: "gatepulse"` et `private: true` restent en l'état tant qu'aucune distribution externe
+  n'est décidée (réaligner alors sur `evolve-data`). Licence **MIT** depuis le 2026-10-09 (repo GitHub
+  `Y0hannH/GatePulse`, `LICENSE` à la racine, `package.json` aligné) — le remote existe désormais.
 - Le nom de package `gatepulse-fabric-sql-demo` doit perdre le suffixe `-demo` (V1, plus une démo) —
   à faire au moment du chantier de renommage, pas isolément.
 
