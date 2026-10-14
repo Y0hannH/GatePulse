@@ -630,3 +630,46 @@ l'implémentation, pas un doute de conception.
    utilisable en pratique.
 
 **2026-10-09 — réglages `gatepulse.validation.*` retirés** (12 réglages du PoC : requêtes de test, tailles, itérations). Ils n'alimentaient que les scénarios P1-P4 du CLI gelé, qui lit son propre `gatepulse.config.json` ; l'extension ne les lit plus. `package.json` n'expose plus que les réglages du produit.
+
+## Feuille de route post-1.0
+
+Évolutions décidées après la publication de la 1.0.x. Chacune est une version mineure (bump +
+CHANGELOG + guide + `.vsix`), publiée à la main.
+
+### Lister et scripter les objets programmables (demandé le 2026-10-14)
+
+**Principe commun** : GatePulse n'envoie que du T-SQL ; tout passe par les vues système, une requête
+= un run de pipeline (plusieurs secondes, plafond de 5 000 lignes / 4 Mo).
+
+1. ✅ **Lister procédures et fonctions** — fait en 1.1.0. `listSchemaObjects` fait un `UNION ALL`
+   `INFORMATION_SCHEMA.TABLES` + `INFORMATION_SCHEMA.ROUTINES` (un seul aller-retour) ; repli sur
+   tables/vues seules, loggé, si le serveur rejette `ROUTINES`. Arbre : procédures puis fonctions
+   après les tables/vues d'un schéma, paramètres en enfants (`INFORMATION_SCHEMA.PARAMETERS`, à la
+   demande, cache mémoire non persisté). Cache de métadonnées versionné (`CACHE_VERSION = 2`).
+   Autocomplétion : icônes procédure/fonction, pas de colonnes proposées pour elles.
+2. ✅ **`Script as CREATE` pour vues, procédures, fonctions** — fait en 1.1.0. `sys.sql_modules`
+   (`definition` + `uses_ansi_nulls` / `uses_quoted_identifier`), assemblé par `buildCreateScript`
+   (`SET …` + `GO` + définition telle quelle + `GO`), ouvert dans un éditeur SQL non enregistré.
+   `definition` NULL (objet `WITH ENCRYPTION`, ou login sans `VIEW DEFINITION`) = erreur explicite,
+   jamais un script vide. **Hypothèses non vérifiées contre un vrai tenant** (même esprit que les
+   points P1-P4) : qu'un `nvarchar(max)` long avec retours à la ligne traverse Lookup/Script sans
+   troncature ni altération ; que `INFORMATION_SCHEMA.ROUTINES`/`PARAMETERS` et `sys.sql_modules`
+   (colonnes `uses_*`) existent sur un Fabric Warehouse.
+3. ⏳ **`Script as CREATE` pour les tables, puis script d'un schéma / d'une base — à faire.**
+   - *Tables* : aucune définition stockée, le DDL est à reconstruire depuis `sys.columns` (types,
+     longueurs/précisions, nullabilité, identity, colonnes calculées, défauts), `sys.key_constraints`
+     (PK/UNIQUE), `sys.indexes` (index simples), `sys.foreign_keys`, `sys.check_constraints`.
+     V1 « courante » : ce qui précède ; le reste (partitionnement, columnstore, mémoire-optimisées,
+     temporelles, filegroups) n'est **pas scripté mais signalé** par un commentaire
+     `-- not scripted: …`, jamais ignoré en silence.
+   - *Ordre* : tables, puis PK/UK/index, puis FK en fin de script, puis vues/fonctions/procédures
+     dans l'ordre de `sys.sql_expression_dependencies` (sinon le script casse au rejeu).
+   - *Schéma / base entière* : action sur les nœuds Schéma et Base. Un run par objet-module (pour
+     rester sous 4 Mo) avec barre de progression annulable ; les tables peuvent être groupées par
+     schéma tant que le résultat reste sous le plafond de 5 000 lignes.
+   - *Triggers* : enfants d'une table, donc non listés aujourd'hui ; à traiter avec les tables
+     (`sys.triggers` + `sys.sql_modules`).
+   - *Hors périmètre* : les données (`INSERT`), les logins/permissions, les objets CLR.
+   - *Limite connue à lever en même temps* : la liste des objets d'une base passe par le plafond de
+     5 000 lignes sans le signaler (déjà vrai pour les tables ; les routines l'aggravent). À
+     paginer ou à signaler dans l'arbre.
