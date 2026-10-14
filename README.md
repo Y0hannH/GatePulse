@@ -12,6 +12,7 @@ The pipeline only receives a connection GUID as a parameter and executes your qu
 ## Features
 
 - **Multi-tenant sidebar** — browse Tenant → Connection → Database → Schema → Table/View/Procedure/Function → Column/Parameter, each level loaded on demand and cached.
+- **Object search** — a search box over every table, view, procedure and function of a database (magnifier on the database row).
 - **Script as CREATE** — right-click a view, procedure or function to open its `CREATE` script in an editor.
 - **SQL panel** — T-SQL editor with syntax highlighting and schema-aware autocomplete (`Ctrl+Space`, or automatically after a `.`).
 - **Results** — sortable, per-column filterable tables, with CSV export of the rows currently shown.

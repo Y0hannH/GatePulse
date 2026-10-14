@@ -492,6 +492,177 @@ export function activate(context: vscode.ExtensionContext): void {
     return `SELECT TOP 100 * FROM ${sqlIdentifier(schema)}.${sqlIdentifier(table)}`;
   };
 
+  /** What a command needs to act on one object — a tree item, or a row of the search box. */
+  interface ObjectTarget {
+    tenantAlias: string;
+    connectionGuid: string;
+    databaseName: string;
+    schemaName: string;
+    name: string;
+  }
+
+  const selectTop100For = async (t: ObjectTarget): Promise<void> => {
+    const { tenantAlias, connectionGuid, databaseName, schemaName, name } = t;
+    if (tenantAlias !== getActiveTenantAlias()) await switchToTenant(tenantAlias);
+    SqlPanel.show(context, panelServices, channel);
+    // Immediate `*` first — the exclusion check is itself a real query and can take a few seconds;
+    // no reason to leave the panel empty that whole time when a plain SELECT * works right away.
+    // Silently upgraded to an explicit column list moments later if one needs excluding.
+    SqlPanel.current?.prefillQuery(
+      connectionGuid,
+      databaseName,
+      `SELECT TOP 100 * FROM ${sqlIdentifier(schemaName)}.${sqlIdentifier(name)}`,
+    );
+    const refined = await buildTableQuery(connectionGuid, databaseName, schemaName, name);
+    SqlPanel.current?.prefillQuery(connectionGuid, databaseName, refined);
+  };
+
+  const scriptCreateFor = async (t: ObjectTarget, kind: ScriptableKind): Promise<void> => {
+    const { tenantAlias, connectionGuid, databaseName, schemaName, name } = t;
+    if (tenantAlias !== getActiveTenantAlias()) await switchToTenant(tenantAlias);
+    try {
+      const script = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `GatePulse: scripting ${sqlIdentifier(schemaName)}.${sqlIdentifier(name)}…`,
+        },
+        async () => {
+          const s = getSession();
+          await ensurePipelineResolved(s);
+          return getCreateScript(scenarioContext(s), connectionGuid, databaseName, schemaName, name, kind);
+        },
+      );
+      const doc = await vscode.workspace.openTextDocument({ language: 'sql', content: script });
+      await vscode.window.showTextDocument(doc, { preview: false });
+    } catch (err) {
+      const error = serializeError(err);
+      getSession().logger.warn('scriptCreate.failed', `[${error.kind}] ${error.message}`);
+      void vscode.window.showErrorMessage(`GatePulse: could not script the ${kind} — ${error.message}`);
+    }
+  };
+
+  const OBJECT_KIND_ICON: Record<SchemaObject['type'], string> = {
+    table: 'table',
+    view: 'eye',
+    procedure: 'symbol-event',
+    function: 'symbol-function',
+  };
+  const OBJECT_KIND_LABEL: Record<SchemaObject['type'], string> = {
+    table: 'table',
+    view: 'view',
+    procedure: 'stored procedure',
+    function: 'function',
+  };
+
+  interface ObjectPickItem extends vscode.QuickPickItem {
+    object: SchemaObject;
+  }
+
+  /**
+   * Search box over every object of one database (tables, views, procedures, functions of all
+   * schemas), fed by the same cache as the tree — so it is instant once the database was expanded
+   * (and loads the list first otherwise). The tree itself only knows what has been expanded, which
+   * is why VS Code's own tree filter cannot do this job. Enter acts on the object: tables and views
+   * open "Select Top 100 Rows", procedures and functions open "Script as CREATE" (views also get a
+   * button for the script).
+   */
+  const searchObjects = async (item?: DatabaseTreeItem): Promise<void> => {
+    let db: { tenantAlias: string; connectionGuid: string; databaseName: string } | undefined = item;
+    if (!db) {
+      // Palette / title bar: offer the databases of the active tenant whose objects are already loaded.
+      const tenant = getActiveTenant(context, readTenants());
+      const guids = new Set(tenantConnections(tenant).map((c) => c.id.toLowerCase()));
+      const loaded = [...schemaCache.keys()]
+        .map((key) => {
+          const i = key.indexOf(':'); // a GUID has no colon, a database name might
+          return { connectionGuid: key.slice(0, i), databaseName: key.slice(i + 1) };
+        })
+        .filter((k) => guids.has(k.connectionGuid.toLowerCase()));
+      if (loaded.length === 0) {
+        void vscode.window.showInformationMessage(
+          'GatePulse: expand a database in the tree first, then search its objects (magnifier on the database row).',
+        );
+        return;
+      }
+      const picked =
+        loaded.length === 1
+          ? loaded[0]
+          : (
+              await vscode.window.showQuickPick(
+                loaded.map((k) => ({
+                  label: k.databaseName,
+                  description: getConnectionName(k.connectionGuid) ?? k.connectionGuid,
+                  value: k,
+                })),
+                { placeHolder: 'GatePulse: search the objects of which database?' },
+              )
+            )?.value;
+      if (!picked) return;
+      db = { tenantAlias: tenant.alias, ...picked };
+    }
+    if (db.tenantAlias !== getActiveTenantAlias()) await switchToTenant(db.tenantAlias);
+    const { tenantAlias, connectionGuid, databaseName } = db;
+    let objects: SchemaObject[];
+    try {
+      objects = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Window,
+          title: `GatePulse: loading the objects of ${databaseName}…`,
+        },
+        () => getSchemaObjects(connectionGuid, databaseName),
+      );
+    } catch (err) {
+      void vscode.window.showErrorMessage(
+        `GatePulse: could not list the objects of ${databaseName} — ${serializeError(err).message}`,
+      );
+      return;
+    }
+    if (objects.length === 0) {
+      void vscode.window.showInformationMessage(`GatePulse: no object found in ${databaseName}.`);
+      return;
+    }
+    const target = (o: SchemaObject): ObjectTarget => ({
+      tenantAlias,
+      connectionGuid,
+      databaseName,
+      schemaName: o.schema,
+      name: o.name,
+    });
+    const act = (o: SchemaObject): Promise<void> =>
+      o.type === 'table' || o.type === 'view'
+        ? selectTop100For(target(o))
+        : scriptCreateFor(target(o), o.type);
+    const scriptButton: vscode.QuickInputButton = {
+      iconPath: new vscode.ThemeIcon('file-code'),
+      tooltip: 'Script as CREATE',
+    };
+    const qp = vscode.window.createQuickPick<ObjectPickItem>();
+    qp.title = `GatePulse: ${databaseName} — ${objects.length} object${objects.length > 1 ? 's' : ''}`;
+    qp.placeholder = 'Type part of a name (schema.name works) — Enter: Select Top 100 / Script as CREATE';
+    qp.matchOnDescription = true; // typing "procedure" or "view" narrows by kind
+    // Label is `schema.name` so a qualified search matches; the icon tells the kind at a glance.
+    qp.items = objects
+      .slice()
+      .sort((a, b) => `${a.schema}.${a.name}`.localeCompare(`${b.schema}.${b.name}`, undefined, { sensitivity: 'base' }))
+      .map((o) => ({
+        label: `$(${OBJECT_KIND_ICON[o.type]}) ${o.schema}.${o.name}`,
+        description: OBJECT_KIND_LABEL[o.type],
+        buttons: o.type === 'view' ? [scriptButton] : [],
+        object: o,
+      }));
+    qp.onDidAccept(() => {
+      const picked = qp.selectedItems[0];
+      qp.hide();
+      if (picked) void act(picked.object);
+    });
+    qp.onDidTriggerItemButton((e) => {
+      qp.hide();
+      void scriptCreateFor(target(e.item.object), 'view');
+    });
+    qp.onDidHide(() => qp.dispose());
+    qp.show();
+  };
+
   context.subscriptions.push(
     tenantTreeView,
     vscode.workspace.onDidChangeConfiguration((e) => {
@@ -514,21 +685,9 @@ export function activate(context: vscode.ExtensionContext): void {
     // that used to overwrite whatever the user was typing in the editor the moment they clicked a
     // row just to browse it. VS Code passes the clicked TreeItem itself as the sole argument for a
     // view/item/context command.
-    vscode.commands.registerCommand('gatepulse.selectTop100', async (item: TableTreeItem) => {
+    vscode.commands.registerCommand('gatepulse.selectTop100', async (item?: TableTreeItem) => {
       if (!item) return;
-      const { tenantAlias, connectionGuid, databaseName, schemaName, tableName } = item;
-      if (tenantAlias !== getActiveTenantAlias()) await switchToTenant(tenantAlias);
-      SqlPanel.show(context, panelServices, channel);
-      // Immediate `*` first — the exclusion check is itself a real query and can take a few seconds;
-      // no reason to leave the panel empty that whole time when a plain SELECT * works right away.
-      // Silently upgraded to an explicit column list moments later if one needs excluding.
-      SqlPanel.current?.prefillQuery(
-        connectionGuid,
-        databaseName,
-        `SELECT TOP 100 * FROM ${sqlIdentifier(schemaName)}.${sqlIdentifier(tableName)}`,
-      );
-      const refined = await buildTableQuery(connectionGuid, databaseName, schemaName, tableName);
-      SqlPanel.current?.prefillQuery(connectionGuid, databaseName, refined);
+      await selectTop100For({ ...item, name: item.tableName });
     }),
     // Right-click on a view/procedure/function: opens its CREATE script in an untitled SQL editor.
     // Tables are not offered (their DDL is not stored by SQL Server, it would have to be rebuilt).
@@ -536,37 +695,20 @@ export function activate(context: vscode.ExtensionContext): void {
       if (!item) return;
       const target =
         'routineName' in item
-          ? { name: item.routineName, kind: item.routineType as 'table' | ScriptableKind }
-          : { name: item.tableName, kind: item.objectType as 'table' | ScriptableKind };
+          ? { ...item, name: item.routineName, kind: item.routineType as 'table' | ScriptableKind }
+          : { ...item, name: item.tableName, kind: item.objectType as 'table' | ScriptableKind };
       if (target.kind === 'table') {
         void vscode.window.showInformationMessage(
           'GatePulse: scripting a table is not available yet — only views, procedures and functions.',
         );
         return;
       }
-      const kind = target.kind;
-      const { tenantAlias, connectionGuid, databaseName, schemaName } = item;
-      if (tenantAlias !== getActiveTenantAlias()) await switchToTenant(tenantAlias);
-      try {
-        const script = await vscode.window.withProgress(
-          {
-            location: vscode.ProgressLocation.Notification,
-            title: `GatePulse: scripting ${sqlIdentifier(schemaName)}.${sqlIdentifier(target.name)}…`,
-          },
-          async () => {
-            const s = getSession();
-            await ensurePipelineResolved(s);
-            return getCreateScript(scenarioContext(s), connectionGuid, databaseName, schemaName, target.name, kind);
-          },
-        );
-        const doc = await vscode.workspace.openTextDocument({ language: 'sql', content: script });
-        await vscode.window.showTextDocument(doc, { preview: false });
-      } catch (err) {
-        const error = serializeError(err);
-        getSession().logger.warn('scriptCreate.failed', `[${error.kind}] ${error.message}`);
-        void vscode.window.showErrorMessage(`GatePulse: could not script the ${kind} — ${error.message}`);
-      }
+      await scriptCreateFor(target, target.kind);
     }),
+    // Magnifier on a database row, or the title bar / palette (then it asks which loaded database).
+    vscode.commands.registerCommand('gatepulse.searchObjects', (item?: DatabaseTreeItem) =>
+      searchObjects(item),
+    ),
     vscode.commands.registerCommand('gatepulse.refreshSchemaTree', () => {
       databaseCache.clear();
       schemaCache.clear();

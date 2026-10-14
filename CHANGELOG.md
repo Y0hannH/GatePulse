@@ -8,6 +8,8 @@ All notable changes to GatePulse are documented here.
 - Stored procedures and functions are listed in the sidebar, under their schema, with their
   parameters (and a function's return type) one level down. They are also offered by the editor's
   autocomplete.
+- `Search Objects` (magnifier on a database row, title bar, Command Palette): a search box over all
+  the objects of a database across schemas; Enter opens `Select Top 100 Rows` or `Script as CREATE`.
 - `Script as CREATE` (right-click a view, procedure or function): opens the object's `CREATE`
   statement in a new SQL editor, with the `SET ANSI_NULLS` / `SET QUOTED_IDENTIFIER` options it was
   created with. An encrypted object, or one the login cannot read (`VIEW DEFINITION`), is reported

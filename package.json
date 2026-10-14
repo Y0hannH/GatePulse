@@ -83,6 +83,11 @@
         "title": "GatePulse: Script as CREATE"
       },
       {
+        "command": "gatepulse.searchObjects",
+        "title": "GatePulse: Search Objects",
+        "icon": "$(search)"
+      },
+      {
         "command": "gatepulse.refreshSchemaTree",
         "title": "GatePulse: Refresh Schema Tree",
         "icon": "$(refresh)"
@@ -187,9 +192,14 @@
           "group": "navigation@3"
         },
         {
-          "command": "gatepulse.refreshSchemaTree",
+          "command": "gatepulse.searchObjects",
           "when": "view == gatepulse.tenantsView",
           "group": "navigation@4"
+        },
+        {
+          "command": "gatepulse.refreshSchemaTree",
+          "when": "view == gatepulse.tenantsView",
+          "group": "navigation@5"
         },
         {
           "command": "gatepulse.pickPipelineOverride",
@@ -221,6 +231,16 @@
         {
           "command": "gatepulse.scriptCreate",
           "when": "view == gatepulse.tenantsView && (viewItem == view || viewItem == procedure || viewItem == function)",
+          "group": "1_actions"
+        },
+        {
+          "command": "gatepulse.searchObjects",
+          "when": "view == gatepulse.tenantsView && viewItem =~ /^database/",
+          "group": "inline@1"
+        },
+        {
+          "command": "gatepulse.searchObjects",
+          "when": "view == gatepulse.tenantsView && viewItem =~ /^database/",
           "group": "1_actions"
         },
         {

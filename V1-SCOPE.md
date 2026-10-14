@@ -655,6 +655,11 @@ CHANGELOG + guide + `.vsix`), publiée à la main.
    points P1-P4) : qu'un `nvarchar(max)` long avec retours à la ligne traverse Lookup/Script sans
    troncature ni altération ; que `INFORMATION_SCHEMA.ROUTINES`/`PARAMETERS` et `sys.sql_modules`
    (colonnes `uses_*`) existent sur un Fabric Warehouse.
+   **Ajout du 2026-10-14 (1.1.0) : recherche d'objets** — `gatepulse.searchObjects`, un QuickPick sur
+   tous les objets (tous schémas) d'une base, alimenté par le même cache que l'arbre ; Entrée =
+   `Select Top 100` (table/vue) ou `Script as CREATE` (procédure/fonction). Le filtre natif de
+   l'arbre VS Code ne convient pas : il ne connaît que les nœuds déjà dépliés. Non fait : « révéler
+   dans l'arbre » (`TreeView.reveal` demande `getParent` + des `id` stables sur tous les niveaux).
 3. ⏳ **`Script as CREATE` pour les tables, puis script d'un schéma / d'une base — à faire.**
    - *Tables* : aucune définition stockée, le DDL est à reconstruire depuis `sys.columns` (types,
      longueurs/précisions, nullabilité, identity, colonnes calculées, défauts), `sys.key_constraints`

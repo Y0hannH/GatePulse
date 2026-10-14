@@ -84,6 +84,7 @@ Tenant            ← "+" adds a connection
 - **Database** — listed from the server (`sys.databases`). If a database you can query is **not listed** (the login cannot see it in `sys.databases`), use **+** on the connection row to add it by hand. It shows as *added manually* and can be removed with a right-click.
 - **Table / View** — click to expand its columns. **Right-click → Select Top 100 Rows** opens the panel with a ready-made `SELECT TOP 100` query. Clicking never touches your editor.
 - **Procedure / Function** — listed under their schema after the tables and views; click to expand their parameters (a function also shows what it *returns*). They also appear in the editor's autocomplete.
+- **Search objects** — the magnifier on a database row (also in the title bar and the Command Palette: *Search Objects*) opens a search box over **every** table, view, procedure and function of that database, all schemas at once. Type part of a name (`dbo.ord` works, and typing `procedure` or `view` narrows by kind). **Enter** opens *Select Top 100 Rows* for a table or view, and *Script as CREATE* for a procedure or function; views also have a button for the script. It uses the loaded object list, so it is instant once the database has been expanded once.
 - **Right-click → Script as CREATE** (view, procedure or function) opens the object's `CREATE` statement in a new SQL editor, so you can save it or re-run it elsewhere. It is the definition exactly as SQL Server stores it, preceded by the `SET ANSI_NULLS` / `SET QUOTED_IDENTIFIER` options it was created with, each followed by `GO`. If the object is encrypted (`WITH ENCRYPTION`) or the connection's login lacks `VIEW DEFINITION`, GatePulse tells you instead of opening an empty script. Scripting **tables** is not available yet.
 - Title bar buttons: open the panel, add a tenant, pick a connection, **refresh** (clears all cached metadata and re-fetches), and a menu with *Pick Pipeline (Override)*, *Show Logs*, *Sign Out* and this guide.
 
@@ -216,6 +217,7 @@ All commands are in the Command Palette under **GatePulse:**.
 | Remove Manually Added Database | Remove such a database (right-click). |
 | Pick Connection | Choose the connection used by the open panel; can be saved as the tenant default. |
 | Refresh Connections | Re-list the connections Fabric exposes. |
+| Search Objects | Magnifier on a database row, or title bar: search every object of a database and act on it. |
 | Select Top 100 Rows | Right-click a table or view in the tree. |
 | Script as CREATE | Right-click a view, procedure or function in the tree: opens its `CREATE` script in a new editor. |
 | Refresh Schema Tree | Clear all cached metadata and re-fetch on demand. |
