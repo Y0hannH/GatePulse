@@ -675,6 +675,9 @@ CHANGELOG + guide + `.vsix`), publiée à la main.
    - *Triggers* : enfants d'une table, donc non listés aujourd'hui ; à traiter avec les tables
      (`sys.triggers` + `sys.sql_modules`).
    - *Hors périmètre* : les données (`INSERT`), les logins/permissions, les objets CLR.
-   - *Limite connue à lever en même temps* : la liste des objets d'une base passe par le plafond de
-     5 000 lignes sans le signaler (déjà vrai pour les tables ; les routines l'aggravent). À
-     paginer ou à signaler dans l'arbre.
+   - ~~Limite connue : la liste des objets d'une base passait par le plafond de 5 000 lignes sans le
+     signaler~~ — levée en 1.1.0 : `listSchemaObjects` pagine (`OFFSET … FETCH NEXT 4000`, tri total
+     schéma/nom/type, un run par page, arrêt de sécurité à 50 pages). Reste non vérifié sur un vrai
+     tenant : support d'`OFFSET/FETCH` côté Fabric ; sinon repli, loggé, sur l'ancienne requête
+     tables/vues sans pagination. Même demande (2026-10-14) : objets groupés par type sous le schéma
+     (`ObjectGroupTreeItem`).

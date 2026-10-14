@@ -133,24 +133,42 @@ export interface SchemaObject {
   type: SchemaObjectType;
 }
 
-/** Tables, views, procedures and functions in one round trip — each discovery is a real pipeline
- *  run, worth minimizing. INFORMATION_SCHEMA is standard SQL: works the same across the databases of
- *  one SQL Server instance, unlike sys.databases which is instance-wide. TABLE_TYPE / ROUTINE_TYPE
- *  tell the kinds apart (BASE TABLE, VIEW, PROCEDURE, FUNCTION). */
-const LIST_SCHEMA_OBJECTS_QUERY =
-  'SELECT TABLE_SCHEMA AS schemaName, TABLE_NAME AS objectName, TABLE_TYPE AS objectType ' +
-  'FROM INFORMATION_SCHEMA.TABLES ' +
-  'UNION ALL ' +
-  'SELECT ROUTINE_SCHEMA, ROUTINE_NAME, ROUTINE_TYPE FROM INFORMATION_SCHEMA.ROUTINES ' +
-  'ORDER BY schemaName, objectName';
+/**
+ * Rows per page when listing a database's objects. The Lookup silently truncates at 5,000 rows
+ * (LOOKUP_ROW_CAP in pipelineRunner.ts), so a page stays well under it: a page that comes back
+ * shorter than this is the last one, one that comes back full means "ask for the next".
+ */
+export const SCHEMA_OBJECTS_PAGE_SIZE = 4000;
 
-/** The pre-1.1 query: tables and views only. Kept as the fallback when the routines half is rejected
- *  by an engine that lacks INFORMATION_SCHEMA.ROUTINES — the tree must never lose its tables to it. */
+/** Safety stop for the paging loop (4,000 × 50 = 200,000 objects) — a database that big is not a
+ *  database to browse in a tree, and a bug must not turn into an endless run of pipeline jobs. */
+const MAX_SCHEMA_OBJECT_PAGES = 50;
+
+/** Tables, views, procedures and functions in one query — each discovery is a real pipeline run,
+ *  worth minimizing. INFORMATION_SCHEMA is standard SQL: works the same across the databases of one
+ *  SQL Server instance, unlike sys.databases which is instance-wide. TABLE_TYPE / ROUTINE_TYPE tell
+ *  the kinds apart (BASE TABLE, VIEW, PROCEDURE, FUNCTION). The ORDER BY is total (schema, name,
+ *  type) so that OFFSET paging never skips or repeats a row between two pages. */
+export function schemaObjectsPageQuery(offset: number): string {
+  return (
+    'SELECT schemaName, objectName, objectType FROM (' +
+    'SELECT TABLE_SCHEMA AS schemaName, TABLE_NAME AS objectName, TABLE_TYPE AS objectType ' +
+    'FROM INFORMATION_SCHEMA.TABLES ' +
+    'UNION ALL ' +
+    'SELECT ROUTINE_SCHEMA, ROUTINE_NAME, ROUTINE_TYPE FROM INFORMATION_SCHEMA.ROUTINES' +
+    ') AS o ORDER BY schemaName, objectName, objectType ' +
+    `OFFSET ${offset} ROWS FETCH NEXT ${SCHEMA_OBJECTS_PAGE_SIZE} ROWS ONLY`
+  );
+}
+
+/** The pre-1.1 query: tables and views only, one page, no OFFSET. Kept as the fallback when the
+ *  routines/paging query is rejected by an engine that lacks INFORMATION_SCHEMA.ROUTINES or OFFSET —
+ *  the tree must never lose its tables to it. */
 const LIST_TABLES_AND_VIEWS_QUERY =
   'SELECT TABLE_SCHEMA AS schemaName, TABLE_NAME AS objectName, TABLE_TYPE AS objectType ' +
   'FROM INFORMATION_SCHEMA.TABLES ORDER BY TABLE_SCHEMA, TABLE_NAME';
 
-/** Failures worth retrying without the routines half. Auth/network/timeout/... would fail the same way. */
+/** Failures worth retrying with the simple query. Auth/network/timeout/... would fail the same way. */
 const ROUTINES_FALLBACK_KINDS: ReadonlySet<ErrorKind> = new Set<ErrorKind>([
   'sql',
   'pipelineFailed',
@@ -167,29 +185,48 @@ export function toSchemaObjectType(raw: unknown): SchemaObjectType {
 }
 
 /** Lists tables, views, procedures and functions of one database, for the sidebar's schema tree and
- *  the editor's autocomplete (V1-SCOPE.md §4, point D). */
+ *  the editor's autocomplete (V1-SCOPE.md §4, point D). Pages through the catalog, so a database with
+ *  more objects than the Lookup's 5,000-row cap is listed in full (one pipeline run per page). */
 export async function listSchemaObjects(
   ctx: ScenarioContext,
   connectionGuid: string,
   databaseName: string,
 ): Promise<SchemaObject[]> {
-  let rows: Record<string, unknown>[];
+  const rows: Record<string, unknown>[] = [];
   try {
-    rows = await runDiscoveryQuery(
-      ctx,
-      { connectionGuid, databaseName, query: LIST_SCHEMA_OBJECTS_QUERY },
-      'list-objects',
-    );
+    for (let page = 0; ; page++) {
+      if (page >= MAX_SCHEMA_OBJECT_PAGES) {
+        ctx.logger.warn(
+          'schema.pageLimit',
+          `Stopped listing ${databaseName} after ${rows.length} objects (${MAX_SCHEMA_OBJECT_PAGES} pages)`,
+        );
+        break;
+      }
+      const batch = await runDiscoveryQuery(
+        ctx,
+        {
+          connectionGuid,
+          databaseName,
+          query: schemaObjectsPageQuery(page * SCHEMA_OBJECTS_PAGE_SIZE),
+        },
+        'list-objects',
+      );
+      rows.push(...batch);
+      if (batch.length < SCHEMA_OBJECTS_PAGE_SIZE) break;
+    }
   } catch (err) {
     if (!(err instanceof GatePulseError) || !ROUTINES_FALLBACK_KINDS.has(err.kind)) throw err;
     ctx.logger.warn(
       'schema.routinesUnavailable',
       `Listing procedures and functions failed (${err.message}); listing tables and views only`,
     );
-    rows = await runDiscoveryQuery(
-      ctx,
-      { connectionGuid, databaseName, query: LIST_TABLES_AND_VIEWS_QUERY },
-      'list-objects',
+    rows.length = 0;
+    rows.push(
+      ...(await runDiscoveryQuery(
+        ctx,
+        { connectionGuid, databaseName, query: LIST_TABLES_AND_VIEWS_QUERY },
+        'list-objects',
+      )),
     );
   }
   return rows

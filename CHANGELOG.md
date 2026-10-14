@@ -16,6 +16,9 @@ All notable changes to GatePulse are documented here.
   instead of producing an empty script.
 
 ### Changed
+- Under a schema, objects are grouped by kind: Tables, Views, Procedures, Functions (with counts).
+- The list of a database's objects is fetched page by page, so databases with more than 5,000
+  tables/views/procedures/functions are listed in full instead of being cut off silently.
 - The schema cache is versioned: the first expansion of a database after the update re-fetches its
   object list once, so that procedures and functions show up without a manual refresh.
 - If a server rejects the procedure/function listing (`INFORMATION_SCHEMA.ROUTINES`), the tree falls

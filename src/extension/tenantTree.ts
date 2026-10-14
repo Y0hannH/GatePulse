@@ -77,6 +77,39 @@ export class SchemaTreeItem extends vscode.TreeItem {
   }
 }
 
+const GROUP_LABELS: Record<SchemaObject['type'], string> = {
+  table: 'Tables',
+  view: 'Views',
+  procedure: 'Procedures',
+  function: 'Functions',
+};
+const GROUP_ICONS: Record<SchemaObject['type'], string> = {
+  table: 'table',
+  view: 'eye',
+  procedure: 'symbol-event',
+  function: 'symbol-function',
+};
+/** Order of the groups under a schema. */
+const GROUP_ORDER: SchemaObject['type'][] = ['table', 'view', 'procedure', 'function'];
+
+/** "Tables", "Views", "Procedures" or "Functions" under a schema — only the non-empty ones exist. */
+export class ObjectGroupTreeItem extends vscode.TreeItem {
+  constructor(
+    public readonly tenantAlias: string,
+    public readonly connectionGuid: string,
+    public readonly databaseName: string,
+    public readonly schemaName: string,
+    public readonly kind: SchemaObject['type'],
+    /** Only the objects of this schema and this kind. */
+    public readonly objects: SchemaObject[],
+  ) {
+    super(GROUP_LABELS[kind], vscode.TreeItemCollapsibleState.Collapsed);
+    this.description = String(objects.length);
+    this.iconPath = new vscode.ThemeIcon(GROUP_ICONS[kind]);
+    this.contextValue = 'object-group';
+  }
+}
+
 export class TableTreeItem extends vscode.TreeItem {
   constructor(
     public readonly tenantAlias: string,
@@ -146,6 +179,7 @@ export type GatePulseTreeItem =
   | ConnectionTreeItem
   | DatabaseTreeItem
   | SchemaTreeItem
+  | ObjectGroupTreeItem
   | TableTreeItem
   | RoutineTreeItem
   | ColumnTreeItem
@@ -212,6 +246,9 @@ export class TenantTreeProvider implements vscode.TreeDataProvider<GatePulseTree
     if (element instanceof SchemaTreeItem) {
       return this.getSchemaChildren(element);
     }
+    if (element instanceof ObjectGroupTreeItem) {
+      return this.getGroupChildren(element);
+    }
     if (element instanceof TableTreeItem) {
       return this.getColumns(element);
     }
@@ -264,23 +301,27 @@ export class TenantTreeProvider implements vscode.TreeDataProvider<GatePulseTree
     }
   }
 
-  /** Tables and views first (interleaved by name, as before routines existed), then procedures, then
-   *  functions — each block sorted by name. */
+  /** A schema's objects, grouped by kind: Tables, Views, Procedures, Functions (non-empty ones only). */
   private getSchemaChildren(schema: SchemaTreeItem): GatePulseTreeItem[] {
-    const byName = (a: SchemaObject, b: SchemaObject) => a.name.localeCompare(b.name);
-    const of = (...types: SchemaObject['type'][]) =>
-      schema.objects.filter((o) => types.includes(o.type)).sort(byName);
     const { tenantAlias, connectionGuid, databaseName, schemaName } = schema;
-    const asRoutine = (o: SchemaObject) =>
-      new RoutineTreeItem(tenantAlias, connectionGuid, databaseName, schemaName, o.name, o.type as 'procedure' | 'function');
-    return [
-      ...of('table', 'view').map(
-        (o) =>
-          new TableTreeItem(tenantAlias, connectionGuid, databaseName, schemaName, o.name, o.type as 'table' | 'view'),
-      ),
-      ...of('procedure').map(asRoutine),
-      ...of('function').map(asRoutine),
-    ];
+    return GROUP_ORDER.flatMap((kind) => {
+      const objects = schema.objects.filter((o) => o.type === kind);
+      return objects.length
+        ? [new ObjectGroupTreeItem(tenantAlias, connectionGuid, databaseName, schemaName, kind, objects)]
+        : [];
+    });
+  }
+
+  private getGroupChildren(group: ObjectGroupTreeItem): GatePulseTreeItem[] {
+    const { tenantAlias, connectionGuid, databaseName, schemaName } = group;
+    return group.objects
+      .slice()
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((o) =>
+        group.kind === 'procedure' || group.kind === 'function'
+          ? new RoutineTreeItem(tenantAlias, connectionGuid, databaseName, schemaName, o.name, group.kind)
+          : new TableTreeItem(tenantAlias, connectionGuid, databaseName, schemaName, o.name, group.kind),
+      );
   }
 
   private async getSchemas(db: DatabaseTreeItem): Promise<GatePulseTreeItem[]> {

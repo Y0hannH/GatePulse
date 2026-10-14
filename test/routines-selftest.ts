@@ -12,6 +12,7 @@ import {
   getCreateScript,
   listRoutineParameters,
   listSchemaObjects,
+  SCHEMA_OBJECTS_PAGE_SIZE,
   toSchemaObjectType,
 } from '../src/core/runQuery';
 import type { ScenarioContext } from '../src/core/scenarios';
@@ -103,6 +104,46 @@ void (async () => {
       kind = (err as GatePulseError).kind;
     }
     expect('an auth failure is not retried as tables-only', [kind, queries.length], ['auth', 1]);
+  }
+
+  console.log('--- listSchemaObjects: paging ---');
+  const fullPage = (prefix: string): Record<string, unknown>[] =>
+    Array.from({ length: SCHEMA_OBJECTS_PAGE_SIZE }, (_, i) => ({
+      schemaName: 'dbo',
+      objectName: `${prefix}${i}`,
+      objectType: 'BASE TABLE',
+    }));
+  {
+    const { ctx, queries } = fakeCtx([
+      fullPage('a'),
+      [{ schemaName: 'dbo', objectName: 'last', objectType: 'PROCEDURE' }],
+    ]);
+    const objects = await listSchemaObjects(ctx, 'c', 'db');
+    expect('a full page is followed by the next one, until a short page', objects.length, SCHEMA_OBJECTS_PAGE_SIZE + 1);
+    expect('the last object of the second page is kept, typed', objects[objects.length - 1], {
+      schema: 'dbo',
+      name: 'last',
+      type: 'procedure',
+    });
+    expect(
+      'pages are asked at consecutive offsets',
+      queries.map((q) => /OFFSET (\d+) ROWS/.exec(q)?.[1]),
+      ['0', String(SCHEMA_OBJECTS_PAGE_SIZE)],
+    );
+    expect('the order is total, so paging cannot skip or repeat a row', queries[0].includes('ORDER BY schemaName, objectName, objectType'), true);
+  }
+  {
+    const { ctx, queries } = fakeCtx([fullPage('a'), []]);
+    const objects = await listSchemaObjects(ctx, 'c', 'db');
+    expect('a database of exactly one page costs one empty extra query, no more', [objects.length, queries.length], [
+      SCHEMA_OBJECTS_PAGE_SIZE,
+      2,
+    ]);
+  }
+  {
+    const { ctx, queries } = fakeCtx([new GatePulseError('sql', 'Incorrect syntax near OFFSET'), []]);
+    await listSchemaObjects(ctx, 'c', 'db');
+    expect('the fallback is the plain, unpaged query', queries[1].includes('OFFSET'), false);
   }
 
   console.log('--- listRoutineParameters ---');
