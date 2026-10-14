@@ -158,6 +158,8 @@ li.CodeMirror-hint-active { background: var(--vscode-list-activeSelectionBackgro
 .cm-hint-schema .codicon { color: var(--vscode-charts-yellow, #dcdcaa); }
 .cm-hint-table .codicon { color: var(--vscode-charts-blue, #569cd6); }
 .cm-hint-view .codicon { color: var(--vscode-charts-purple, #c586c0); }
+.cm-hint-procedure .codicon { color: var(--vscode-charts-orange, #ce9178); }
+.cm-hint-function .codicon { color: var(--vscode-charts-red, #d16969); }
 .cm-hint-column .codicon { color: var(--vscode-charts-green, #b5cea8); }
 li.CodeMirror-hint-active .codicon { color: inherit; }
 

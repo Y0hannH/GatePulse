@@ -268,7 +268,14 @@
     return { qualifier: null, partial: bare ? bare[1] : '', fromCh: cur.ch - (bare ? bare[1].length : 0) };
   }
 
-  const HINT_ICONS = { schema: 'symbol-namespace', table: 'table', view: 'eye', column: 'symbol-field' };
+  const HINT_ICONS = {
+    schema: 'symbol-namespace',
+    table: 'table',
+    view: 'eye',
+    procedure: 'symbol-event',
+    function: 'symbol-function',
+    column: 'symbol-field',
+  };
 
   /** A rich show-hint item: icon + name, classed by kind so schemas/tables/views/columns are told
    *  apart at a glance instead of one flat list of names. */
@@ -309,7 +316,10 @@
           callback({ list, from, to: cur });
           return;
         }
-        const table = objects.find((o) => o.name.toLowerCase() === qualifierLower);
+        // Only tables and views have columns to offer — a procedure or function name stops here.
+        const table = objects.find(
+          (o) => (o.type === 'table' || o.type === 'view') && o.name.toLowerCase() === qualifierLower,
+        );
         if (!table) return callback({ list: [], from, to: cur });
         ensureColumns(connectionGuid, databaseName, table).then((columns) => {
           const list = columns

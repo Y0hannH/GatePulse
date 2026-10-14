@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 
 import type { TenantEntry } from '../core/config';
 import { tenantConnections } from '../core/config';
-import type { ColumnInfo, SchemaObject } from '../core/runQuery';
+import type { ColumnInfo, ParameterInfo, SchemaObject } from '../core/runQuery';
 
 export class TenantTreeItem extends vscode.TreeItem {
   constructor(
@@ -95,6 +95,33 @@ export class TableTreeItem extends vscode.TreeItem {
   }
 }
 
+/** A stored procedure or function. Expands to its parameters, like a table does to its columns. */
+export class RoutineTreeItem extends vscode.TreeItem {
+  constructor(
+    public readonly tenantAlias: string,
+    public readonly connectionGuid: string,
+    public readonly databaseName: string,
+    public readonly schemaName: string,
+    public readonly routineName: string,
+    public readonly routineType: 'procedure' | 'function',
+  ) {
+    super(routineName, vscode.TreeItemCollapsibleState.Collapsed);
+    this.tooltip = `${schemaName}.${routineName} (${routineType === 'procedure' ? 'stored procedure' : 'function'})`;
+    this.iconPath = new vscode.ThemeIcon(routineType === 'procedure' ? 'symbol-event' : 'symbol-function');
+    // Like tables: no `command`, a click only expands. "Script as CREATE" is the right-click action.
+    this.contextValue = routineType;
+  }
+}
+
+export class ParameterTreeItem extends vscode.TreeItem {
+  constructor(parameter: ParameterInfo) {
+    super(parameter.name || '(unnamed)', vscode.TreeItemCollapsibleState.None);
+    this.description = `${parameter.dataType}${parameter.mode === 'OUT' || parameter.mode === 'INOUT' ? ` (${parameter.mode.toLowerCase()})` : ''}`;
+    this.iconPath = new vscode.ThemeIcon(parameter.isReturn ? 'arrow-left' : 'symbol-parameter');
+    this.contextValue = 'parameter';
+  }
+}
+
 export class ColumnTreeItem extends vscode.TreeItem {
   constructor(column: ColumnInfo) {
     super(column.name, vscode.TreeItemCollapsibleState.None);
@@ -120,7 +147,9 @@ export type GatePulseTreeItem =
   | DatabaseTreeItem
   | SchemaTreeItem
   | TableTreeItem
+  | RoutineTreeItem
   | ColumnTreeItem
+  | ParameterTreeItem
   | MessageTreeItem;
 
 /**
@@ -147,6 +176,12 @@ export class TenantTreeProvider implements vscode.TreeDataProvider<GatePulseTree
       schema: string,
       table: string,
     ) => Promise<ColumnInfo[]>,
+    private readonly listParametersFor: (
+      connectionGuid: string,
+      databaseName: string,
+      schema: string,
+      routine: string,
+    ) => Promise<ParameterInfo[]>,
   ) {}
 
   refresh(): void {
@@ -175,23 +210,13 @@ export class TenantTreeProvider implements vscode.TreeDataProvider<GatePulseTree
       return this.getSchemas(element);
     }
     if (element instanceof SchemaTreeItem) {
-      return element.objects
-        .slice()
-        .sort((a, b) => a.name.localeCompare(b.name))
-        .map(
-          (o) =>
-            new TableTreeItem(
-              element.tenantAlias,
-              element.connectionGuid,
-              element.databaseName,
-              element.schemaName,
-              o.name,
-              o.type,
-            ),
-        );
+      return this.getSchemaChildren(element);
     }
     if (element instanceof TableTreeItem) {
       return this.getColumns(element);
+    }
+    if (element instanceof RoutineTreeItem) {
+      return this.getParameters(element);
     }
     return [];
   }
@@ -239,10 +264,29 @@ export class TenantTreeProvider implements vscode.TreeDataProvider<GatePulseTree
     }
   }
 
+  /** Tables and views first (interleaved by name, as before routines existed), then procedures, then
+   *  functions — each block sorted by name. */
+  private getSchemaChildren(schema: SchemaTreeItem): GatePulseTreeItem[] {
+    const byName = (a: SchemaObject, b: SchemaObject) => a.name.localeCompare(b.name);
+    const of = (...types: SchemaObject['type'][]) =>
+      schema.objects.filter((o) => types.includes(o.type)).sort(byName);
+    const { tenantAlias, connectionGuid, databaseName, schemaName } = schema;
+    const asRoutine = (o: SchemaObject) =>
+      new RoutineTreeItem(tenantAlias, connectionGuid, databaseName, schemaName, o.name, o.type as 'procedure' | 'function');
+    return [
+      ...of('table', 'view').map(
+        (o) =>
+          new TableTreeItem(tenantAlias, connectionGuid, databaseName, schemaName, o.name, o.type as 'table' | 'view'),
+      ),
+      ...of('procedure').map(asRoutine),
+      ...of('function').map(asRoutine),
+    ];
+  }
+
   private async getSchemas(db: DatabaseTreeItem): Promise<GatePulseTreeItem[]> {
     try {
       const objects = await this.listObjectsFor(db.connectionGuid, db.databaseName);
-      if (objects.length === 0) return [new MessageTreeItem('No table or view found', 'info')];
+      if (objects.length === 0) return [new MessageTreeItem('No table, view, procedure or function found', 'info')];
       const schemas = [...new Set(objects.map((o) => o.schema))].sort((a, b) => a.localeCompare(b));
       return schemas.map(
         (schema) =>
@@ -269,6 +313,21 @@ export class TenantTreeProvider implements vscode.TreeDataProvider<GatePulseTree
       );
       if (columns.length === 0) return [new MessageTreeItem('No column found', 'info')];
       return columns.map((c) => new ColumnTreeItem(c));
+    } catch (err) {
+      return [new MessageTreeItem(`Error: ${(err as Error).message}`, 'warning')];
+    }
+  }
+
+  private async getParameters(routine: RoutineTreeItem): Promise<GatePulseTreeItem[]> {
+    try {
+      const parameters = await this.listParametersFor(
+        routine.connectionGuid,
+        routine.databaseName,
+        routine.schemaName,
+        routine.routineName,
+      );
+      if (parameters.length === 0) return [new MessageTreeItem('No parameter', 'info')];
+      return parameters.map((p) => new ParameterTreeItem(p));
     } catch (err) {
       return [new MessageTreeItem(`Error: ${(err as Error).message}`, 'warning')];
     }

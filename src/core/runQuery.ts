@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 
+import type { ErrorKind } from './errors';
 import { GatePulseError } from './errors';
 import type { CheckStatus, ValidationCheck, ValidationPoint } from './logger';
 import type { ExecuteOptions, QueryParams } from './pipelineRunner';
@@ -124,37 +125,78 @@ async function runDiscoveryQuery(
   return report.activities.flatMap((a) => a.rows);
 }
 
+export type SchemaObjectType = 'table' | 'view' | 'procedure' | 'function';
+
 export interface SchemaObject {
   schema: string;
   name: string;
-  type: 'table' | 'view';
+  type: SchemaObjectType;
 }
 
-/** INFORMATION_SCHEMA is standard SQL — works the same across the databases of one SQL Server
- *  instance, unlike sys.databases which is instance-wide. Tables and views come back in one round
- *  trip (TABLE_TYPE distinguishes them) since each is a real pipeline run — worth minimizing. */
+/** Tables, views, procedures and functions in one round trip — each discovery is a real pipeline
+ *  run, worth minimizing. INFORMATION_SCHEMA is standard SQL: works the same across the databases of
+ *  one SQL Server instance, unlike sys.databases which is instance-wide. TABLE_TYPE / ROUTINE_TYPE
+ *  tell the kinds apart (BASE TABLE, VIEW, PROCEDURE, FUNCTION). */
 const LIST_SCHEMA_OBJECTS_QUERY =
+  'SELECT TABLE_SCHEMA AS schemaName, TABLE_NAME AS objectName, TABLE_TYPE AS objectType ' +
+  'FROM INFORMATION_SCHEMA.TABLES ' +
+  'UNION ALL ' +
+  'SELECT ROUTINE_SCHEMA, ROUTINE_NAME, ROUTINE_TYPE FROM INFORMATION_SCHEMA.ROUTINES ' +
+  'ORDER BY schemaName, objectName';
+
+/** The pre-1.1 query: tables and views only. Kept as the fallback when the routines half is rejected
+ *  by an engine that lacks INFORMATION_SCHEMA.ROUTINES — the tree must never lose its tables to it. */
+const LIST_TABLES_AND_VIEWS_QUERY =
   'SELECT TABLE_SCHEMA AS schemaName, TABLE_NAME AS objectName, TABLE_TYPE AS objectType ' +
   'FROM INFORMATION_SCHEMA.TABLES ORDER BY TABLE_SCHEMA, TABLE_NAME';
 
-/** Lists tables and views of one database, for the sidebar's schema tree (V1-SCOPE.md §4, point D). */
+/** Failures worth retrying without the routines half. Auth/network/timeout/... would fail the same way. */
+const ROUTINES_FALLBACK_KINDS: ReadonlySet<ErrorKind> = new Set<ErrorKind>([
+  'sql',
+  'pipelineFailed',
+  'resultTooLarge',
+]);
+
+/** `INFORMATION_SCHEMA` TABLE_TYPE / ROUTINE_TYPE → our kinds. Anything unrecognised is a table. */
+export function toSchemaObjectType(raw: unknown): SchemaObjectType {
+  const t = String(raw ?? '').toUpperCase();
+  if (t.includes('VIEW')) return 'view';
+  if (t.includes('PROCEDURE')) return 'procedure';
+  if (t.includes('FUNCTION')) return 'function';
+  return 'table';
+}
+
+/** Lists tables, views, procedures and functions of one database, for the sidebar's schema tree and
+ *  the editor's autocomplete (V1-SCOPE.md §4, point D). */
 export async function listSchemaObjects(
   ctx: ScenarioContext,
   connectionGuid: string,
   databaseName: string,
 ): Promise<SchemaObject[]> {
-  const rows = await runDiscoveryQuery(
-    ctx,
-    { connectionGuid, databaseName, query: LIST_SCHEMA_OBJECTS_QUERY },
-    'list-objects',
-  );
+  let rows: Record<string, unknown>[];
+  try {
+    rows = await runDiscoveryQuery(
+      ctx,
+      { connectionGuid, databaseName, query: LIST_SCHEMA_OBJECTS_QUERY },
+      'list-objects',
+    );
+  } catch (err) {
+    if (!(err instanceof GatePulseError) || !ROUTINES_FALLBACK_KINDS.has(err.kind)) throw err;
+    ctx.logger.warn(
+      'schema.routinesUnavailable',
+      `Listing procedures and functions failed (${err.message}); listing tables and views only`,
+    );
+    rows = await runDiscoveryQuery(
+      ctx,
+      { connectionGuid, databaseName, query: LIST_TABLES_AND_VIEWS_QUERY },
+      'list-objects',
+    );
+  }
   return rows
     .map((r) => ({
       schema: String(r.schemaName ?? ''),
       name: String(r.objectName ?? ''),
-      type: (String(r.objectType ?? '').toUpperCase().includes('VIEW') ? 'view' : 'table') as
-        | 'table'
-        | 'view',
+      type: toSchemaObjectType(r.objectType),
     }))
     .filter((o) => o.schema && o.name);
 }
@@ -275,4 +317,131 @@ export async function listColumns(
     dataType: String(r.dataType ?? ''),
     nullable: String(r.isNullable ?? '').toUpperCase() === 'YES',
   }));
+}
+
+export interface ParameterInfo {
+  /** `@name`, or `(returns)` for the return value of a function. */
+  name: string;
+  /** Type, with its length when it has one: `nvarchar(50)`, `varchar(max)`, `int`. */
+  dataType: string;
+  /** `IN`, `OUT` or `INOUT` — as INFORMATION_SCHEMA.PARAMETERS reports it. */
+  mode: string;
+  isReturn: boolean;
+}
+
+/** `DATA_TYPE` + `CHARACTER_MAXIMUM_LENGTH` → `nvarchar(50)`; -1 is SQL Server's marker for `max`. */
+export function formatParameterType(dataType: string, maxLength: unknown): string {
+  const length = maxLength === null || maxLength === undefined || maxLength === '' ? NaN : Number(maxLength);
+  if (!Number.isFinite(length)) return dataType;
+  return length === -1 ? `${dataType}(max)` : `${dataType}(${length})`;
+}
+
+/** Lists one procedure/function's parameters, for the sidebar's schema tree — lazy, one routine at a
+ *  time, like listColumns. A scalar function's return value comes back as an extra row (IS_RESULT). */
+export async function listRoutineParameters(
+  ctx: ScenarioContext,
+  connectionGuid: string,
+  databaseName: string,
+  schema: string,
+  routine: string,
+): Promise<ParameterInfo[]> {
+  const query =
+    'SELECT PARAMETER_NAME AS parameterName, DATA_TYPE AS dataType, PARAMETER_MODE AS parameterMode, ' +
+    'IS_RESULT AS isResult, CHARACTER_MAXIMUM_LENGTH AS maxLength ' +
+    `FROM INFORMATION_SCHEMA.PARAMETERS WHERE SPECIFIC_SCHEMA = N${sqlStringLiteral(schema)} ` +
+    `AND SPECIFIC_NAME = N${sqlStringLiteral(routine)} ORDER BY ORDINAL_POSITION`;
+  const rows = await runDiscoveryQuery(ctx, { connectionGuid, databaseName, query }, 'list-parameters');
+  return rows.map((r) => {
+    const isReturn = String(r.isResult ?? '').toUpperCase() === 'YES';
+    return {
+      name: isReturn ? '(returns)' : String(r.parameterName ?? ''),
+      dataType: formatParameterType(String(r.dataType ?? ''), r.maxLength),
+      mode: String(r.parameterMode ?? '').toUpperCase(),
+      isReturn,
+    };
+  });
+}
+
+/** Kinds whose `CREATE` text SQL Server keeps verbatim in sys.sql_modules. Tables are not among
+ *  them: there is no stored definition to read back, the DDL would have to be rebuilt. */
+export type ScriptableKind = 'view' | 'procedure' | 'function';
+
+export interface CreateScriptInput {
+  databaseName: string;
+  schema: string;
+  name: string;
+  kind: ScriptableKind;
+  definition: string;
+  ansiNulls: boolean;
+  quotedIdentifier: boolean;
+}
+
+/**
+ * The text of the "Script as CREATE" document: the object's own definition, preceded by the two SET
+ * options it was created under (SSMS does the same — `QUOTED_IDENTIFIER` in particular changes what
+ * the module means) and each followed by `GO`, because a CREATE must be the first statement of its
+ * batch. The definition itself is left exactly as SQL Server stores it, line endings included.
+ */
+export function buildCreateScript(input: CreateScriptInput): string {
+  const eol = input.definition.includes('\r\n') ? '\r\n' : '\n';
+  const body = input.definition.replace(/^\uFEFF/, '').replace(/\s+$/, '');
+  return (
+    [
+      `-- GatePulse: ${input.kind} ${sqlIdentifier(input.schema)}.${sqlIdentifier(input.name)} ` +
+        `in database ${sqlIdentifier(input.databaseName)}`,
+      `SET ANSI_NULLS ${input.ansiNulls ? 'ON' : 'OFF'}`,
+      'GO',
+      `SET QUOTED_IDENTIFIER ${input.quotedIdentifier ? 'ON' : 'OFF'}`,
+      'GO',
+      body,
+      'GO',
+    ].join(eol) + eol
+  );
+}
+
+/**
+ * Reads one view/procedure/function's definition and returns its CREATE script. Throws a
+ * GatePulseError rather than returning an empty or partial script: `definition` comes back NULL when
+ * the object is `WITH ENCRYPTION` or when the connection's login lacks VIEW DEFINITION, and a blank
+ * document would pass for a real (empty) script.
+ */
+export async function getCreateScript(
+  ctx: ScenarioContext,
+  connectionGuid: string,
+  databaseName: string,
+  schema: string,
+  name: string,
+  kind: ScriptableKind,
+): Promise<string> {
+  const query =
+    'SELECT m.definition AS definition, CAST(m.uses_ansi_nulls AS int) AS ansiNulls, ' +
+    'CAST(m.uses_quoted_identifier AS int) AS quotedIdentifier ' +
+    'FROM sys.objects o JOIN sys.schemas s ON s.schema_id = o.schema_id ' +
+    'JOIN sys.sql_modules m ON m.object_id = o.object_id ' +
+    `WHERE s.name = N${sqlStringLiteral(schema)} AND o.name = N${sqlStringLiteral(name)}`;
+  const rows = await runDiscoveryQuery(ctx, { connectionGuid, databaseName, query }, 'script-create');
+  const label = `${sqlIdentifier(schema)}.${sqlIdentifier(name)}`;
+  if (rows.length === 0) {
+    throw new GatePulseError(
+      'sql',
+      `${label} was not found in ${sqlIdentifier(databaseName)} — it may have been dropped or renamed (use "Refresh Schema Tree"), or the connection's login cannot see it.`,
+    );
+  }
+  const definition = rows[0].definition;
+  if (typeof definition !== 'string' || definition.trim() === '') {
+    throw new GatePulseError(
+      'permission',
+      `The definition of ${label} is not available: the object is encrypted (WITH ENCRYPTION), or the connection's login does not have VIEW DEFINITION on it.`,
+    );
+  }
+  return buildCreateScript({
+    databaseName,
+    schema,
+    name,
+    kind,
+    definition,
+    // Absent/unparseable → the SQL Server default (ON), which is what SSMS also falls back to.
+    ansiNulls: Number(rows[0].ansiNulls ?? 1) !== 0,
+    quotedIdentifier: Number(rows[0].quotedIdentifier ?? 1) !== 0,
+  });
 }

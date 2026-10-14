@@ -2,7 +2,7 @@
   "name": "gatepulse",
   "displayName": "GatePulse — SQL via Fabric Pipeline",
   "description": "Run ad hoc SQL from VS Code on any Microsoft Fabric-authorized connection — gateway (on-prem / IP-filtered) or cloud — through a generic Fabric pipeline, driven only by the Fabric REST API.",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "publisher": "evolve-data",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -77,6 +77,10 @@
       {
         "command": "gatepulse.selectTop100",
         "title": "GatePulse: Select Top 100 Rows"
+      },
+      {
+        "command": "gatepulse.scriptCreate",
+        "title": "GatePulse: Script as CREATE"
       },
       {
         "command": "gatepulse.refreshSchemaTree",
@@ -154,6 +158,10 @@
           "when": "false"
         },
         {
+          "command": "gatepulse.scriptCreate",
+          "when": "false"
+        },
+        {
           "command": "gatepulse.removeDatabase",
           "when": "false"
         },
@@ -208,6 +216,11 @@
         {
           "command": "gatepulse.selectTop100",
           "when": "view == gatepulse.tenantsView && (viewItem == table || viewItem == view)",
+          "group": "1_actions"
+        },
+        {
+          "command": "gatepulse.scriptCreate",
+          "when": "view == gatepulse.tenantsView && (viewItem == view || viewItem == procedure || viewItem == function)",
           "group": "1_actions"
         },
         {
@@ -427,7 +440,7 @@
     "lint": "eslint .",
     "format": "prettier --write --no-error-on-unmatched-pattern \"src/**/*.{ts,tsx}\" \"test/**/*.ts\" \"*.js\"",
     "format:check": "prettier --check --no-error-on-unmatched-pattern \"src/**/*.{ts,tsx}\" \"test/**/*.ts\" \"*.js\"",
-    "test": "tsx test/mock-selftest.ts && tsx test/provision-selftest.ts && tsx test/convert-selftest.ts",
+    "test": "tsx test/mock-selftest.ts && tsx test/provision-selftest.ts && tsx test/convert-selftest.ts && tsx test/routines-selftest.ts",
     "vsix": "vsce package --no-dependencies",
     "cli": "node dist/cli.js",
     "validate": "node dist/cli.js all"

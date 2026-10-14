@@ -4,16 +4,19 @@ import * as vscode from 'vscode';
 
 import type { AuthFlow, ParameterNames, ParameterPayloadFormat, TenantEntry } from '../core/config';
 import { buildConfigForTenant, isGuid, tenantConnections } from '../core/config';
+import { serializeError } from '../core/errors';
 import type { FabricConnection } from '../core/fabricClient';
 import { isSupportedSqlConnection } from '../core/fabricClient';
 import type { LogEntry, LogSink } from '../core/logger';
 import { formatEntry } from '../core/logger';
 import { ensurePipeline } from '../core/provision';
-import type { ColumnInfo, SchemaObject } from '../core/runQuery';
+import type { ColumnInfo, ParameterInfo, SchemaObject, ScriptableKind } from '../core/runQuery';
 import {
   convertedColumnExpression,
+  getCreateScript,
   listColumns,
   listDatabases,
+  listRoutineParameters,
   listSchemaObjects,
   sqlIdentifier,
 } from '../core/runQuery';
@@ -22,7 +25,7 @@ import type { Session } from '../core/session';
 import { createSession } from '../core/session';
 import type { PanelServices } from './panel';
 import { SqlPanel } from './panel';
-import type { ConnectionTreeItem, DatabaseTreeItem, TableTreeItem } from './tenantTree';
+import type { ConnectionTreeItem, DatabaseTreeItem, RoutineTreeItem, TableTreeItem } from './tenantTree';
 import { TenantTreeProvider } from './tenantTree';
 
 /** Resolves and caches the pipeline id on `session.cfg` — shared by a query run, the panel's
@@ -46,7 +49,12 @@ function scenarioContext(session: Session): ScenarioContext {
 const CACHE_STORAGE_KEY = 'gatepulse.schemaMetadataCache';
 const CONNECTION_NAMES_KEY = 'gatepulse.connectionNames';
 
+/** Bumped when the shape of what is cached changes. 2: `objects` now also holds procedures and
+ *  functions — an older cache would show a database without any until the next manual refresh. */
+const CACHE_VERSION = 2;
+
 interface PersistedSchemaCache {
+  version?: number;
   databases: Record<string, string[]>;
   objects: Record<string, SchemaObject[]>;
   columns: Record<string, ColumnInfo[]>;
@@ -215,8 +223,12 @@ export function activate(context: vscode.ExtensionContext): void {
     schemaCachingEnabled() && persisted ? Object.entries(persisted.databases) : [],
   );
   const schemaCache = new Map<string, SchemaObject[]>(
-    schemaCachingEnabled() && persisted ? Object.entries(persisted.objects) : [],
+    schemaCachingEnabled() && persisted && persisted.version === CACHE_VERSION
+      ? Object.entries(persisted.objects)
+      : [],
   );
+  // Parameters of procedures/functions: in memory only (cheap, and nothing but the tree reads them).
+  const parametersCache = new Map<string, ParameterInfo[]>();
   const columnsCache = new Map<string, ColumnInfo[]>(
     schemaCachingEnabled() && persisted ? Object.entries(persisted.columns) : [],
   );
@@ -224,6 +236,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const persistSchemaCaches = (): void => {
     if (!schemaCachingEnabled()) return;
     void context.globalState.update(CACHE_STORAGE_KEY, {
+      version: CACHE_VERSION,
       databases: Object.fromEntries(databaseCache),
       objects: Object.fromEntries(schemaCache),
       columns: Object.fromEntries(columnsCache),
@@ -391,6 +404,40 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   };
 
+  const parametersInFlight = new Map<string, Promise<ParameterInfo[]>>();
+
+  const getParameters = async (
+    connectionGuid: string,
+    databaseName: string,
+    schema: string,
+    routine: string,
+  ): Promise<ParameterInfo[]> => {
+    const key = `${connectionGuid}:${databaseName}:${schema}:${routine}`;
+    const cached = parametersCache.get(key);
+    if (cached) return cached;
+    const pending = parametersInFlight.get(key);
+    if (pending) return pending;
+    const promise = (async () => {
+      const s = getSession();
+      await ensurePipelineResolved(s);
+      const parameters = await listRoutineParameters(
+        scenarioContext(s),
+        connectionGuid,
+        databaseName,
+        schema,
+        routine,
+      );
+      parametersCache.set(key, parameters);
+      return parameters;
+    })();
+    parametersInFlight.set(key, promise);
+    try {
+      return await promise;
+    } finally {
+      if (parametersInFlight.get(key) === promise) parametersInFlight.delete(key);
+    }
+  };
+
   const panelServices: PanelServices = {
     getSession,
     getTenants: readTenants,
@@ -413,6 +460,7 @@ export function activate(context: vscode.ExtensionContext): void {
     (connectionGuid) => getDatabases(connectionGuid, '', false),
     getSchemaObjects,
     getColumns,
+    getParameters,
   );
   const tenantTreeView = vscode.window.createTreeView('gatepulse.tenantsView', {
     treeDataProvider: tenantTree,
@@ -482,10 +530,48 @@ export function activate(context: vscode.ExtensionContext): void {
       const refined = await buildTableQuery(connectionGuid, databaseName, schemaName, tableName);
       SqlPanel.current?.prefillQuery(connectionGuid, databaseName, refined);
     }),
+    // Right-click on a view/procedure/function: opens its CREATE script in an untitled SQL editor.
+    // Tables are not offered (their DDL is not stored by SQL Server, it would have to be rebuilt).
+    vscode.commands.registerCommand('gatepulse.scriptCreate', async (item?: TableTreeItem | RoutineTreeItem) => {
+      if (!item) return;
+      const target =
+        'routineName' in item
+          ? { name: item.routineName, kind: item.routineType as 'table' | ScriptableKind }
+          : { name: item.tableName, kind: item.objectType as 'table' | ScriptableKind };
+      if (target.kind === 'table') {
+        void vscode.window.showInformationMessage(
+          'GatePulse: scripting a table is not available yet — only views, procedures and functions.',
+        );
+        return;
+      }
+      const kind = target.kind;
+      const { tenantAlias, connectionGuid, databaseName, schemaName } = item;
+      if (tenantAlias !== getActiveTenantAlias()) await switchToTenant(tenantAlias);
+      try {
+        const script = await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: `GatePulse: scripting ${sqlIdentifier(schemaName)}.${sqlIdentifier(target.name)}…`,
+          },
+          async () => {
+            const s = getSession();
+            await ensurePipelineResolved(s);
+            return getCreateScript(scenarioContext(s), connectionGuid, databaseName, schemaName, target.name, kind);
+          },
+        );
+        const doc = await vscode.workspace.openTextDocument({ language: 'sql', content: script });
+        await vscode.window.showTextDocument(doc, { preview: false });
+      } catch (err) {
+        const error = serializeError(err);
+        getSession().logger.warn('scriptCreate.failed', `[${error.kind}] ${error.message}`);
+        void vscode.window.showErrorMessage(`GatePulse: could not script the ${kind} — ${error.message}`);
+      }
+    }),
     vscode.commands.registerCommand('gatepulse.refreshSchemaTree', () => {
       databaseCache.clear();
       schemaCache.clear();
       columnsCache.clear();
+      parametersCache.clear();
       void context.globalState.update(CACHE_STORAGE_KEY, undefined);
       tenantTree.refresh();
     }),

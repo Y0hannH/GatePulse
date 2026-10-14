@@ -73,14 +73,18 @@ Tenant            ← "+" adds a connection
 └─ Connection     ← "+" adds a database by hand
    └─ Database
       └─ Schema
-         └─ Table / View
-            └─ Column (type, nullable)
+         ├─ Table / View
+         │  └─ Column (type, nullable)
+         └─ Procedure / Function
+            └─ Parameter (type, mode)
 ```
 
 - **Tenant** — the alias, with the default connection's name next to it. Expanding or clicking a tenant makes it the **active tenant** (one tenant is active at a time).
 - **Connection** — shown by name when Fabric reports one, otherwise by GUID. The default one is marked *default*. Right-click → **Remove Connection From Tenant**.
 - **Database** — listed from the server (`sys.databases`). If a database you can query is **not listed** (the login cannot see it in `sys.databases`), use **+** on the connection row to add it by hand. It shows as *added manually* and can be removed with a right-click.
 - **Table / View** — click to expand its columns. **Right-click → Select Top 100 Rows** opens the panel with a ready-made `SELECT TOP 100` query. Clicking never touches your editor.
+- **Procedure / Function** — listed under their schema after the tables and views; click to expand their parameters (a function also shows what it *returns*). They also appear in the editor's autocomplete.
+- **Right-click → Script as CREATE** (view, procedure or function) opens the object's `CREATE` statement in a new SQL editor, so you can save it or re-run it elsewhere. It is the definition exactly as SQL Server stores it, preceded by the `SET ANSI_NULLS` / `SET QUOTED_IDENTIFIER` options it was created with, each followed by `GO`. If the object is encrypted (`WITH ENCRYPTION`) or the connection's login lacks `VIEW DEFINITION`, GatePulse tells you instead of opening an empty script. Scripting **tables** is not available yet.
 - Title bar buttons: open the panel, add a tenant, pick a connection, **refresh** (clears all cached metadata and re-fetches), and a menu with *Pick Pipeline (Override)*, *Show Logs*, *Sign Out* and this guide.
 
 ## 4. The SQL panel
@@ -150,6 +154,7 @@ Limits of the automatic rewrite: queries starting with `WITH` (CTE) or `EXEC` ar
 | Limit | Detail |
 |---|---|
 | **5,000 rows** per activity | The Lookup activity silently truncates beyond this. GatePulse flags it in a banner when it detects it, but cannot recover the rest — use `TOP`, `WHERE` or paging. |
+| **5,000 objects** per database in the tree | The list of tables, views, procedures and functions is a query like any other: beyond 5,000 objects the tree shows only the first ones, without a warning. Type the name in the panel instead. |
 | **4 MB** of output | Larger results make the run fail (*Result too large*). Select fewer columns instead of `SELECT *`. |
 | **Latency** | Each query is a pipeline job: queueing plus execution is typically seconds. |
 | **Concurrency** | One query at a time per panel. Many parallel jobs can hit Fabric rate limits (HTTP 429, retried automatically). |
@@ -212,6 +217,7 @@ All commands are in the Command Palette under **GatePulse:**.
 | Pick Connection | Choose the connection used by the open panel; can be saved as the tenant default. |
 | Refresh Connections | Re-list the connections Fabric exposes. |
 | Select Top 100 Rows | Right-click a table or view in the tree. |
+| Script as CREATE | Right-click a view, procedure or function in the tree: opens its `CREATE` script in a new editor. |
 | Refresh Schema Tree | Clear all cached metadata and re-fetch on demand. |
 | Pick Pipeline (Override) | Choose an existing pipeline for the tenant instead of the auto-provisioned one. |
 | Show Logs | Open the GatePulse output channel. |

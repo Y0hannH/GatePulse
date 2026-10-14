@@ -2,6 +2,23 @@
 
 All notable changes to GatePulse are documented here.
 
+## [1.1.0] - 2026-10-14
+
+### Added
+- Stored procedures and functions are listed in the sidebar, under their schema, with their
+  parameters (and a function's return type) one level down. They are also offered by the editor's
+  autocomplete.
+- `Script as CREATE` (right-click a view, procedure or function): opens the object's `CREATE`
+  statement in a new SQL editor, with the `SET ANSI_NULLS` / `SET QUOTED_IDENTIFIER` options it was
+  created with. An encrypted object, or one the login cannot read (`VIEW DEFINITION`), is reported
+  instead of producing an empty script.
+
+### Changed
+- The schema cache is versioned: the first expansion of a database after the update re-fetches its
+  object list once, so that procedures and functions show up without a manual refresh.
+- If a server rejects the procedure/function listing (`INFORMATION_SCHEMA.ROUTINES`), the tree falls
+  back to tables and views only and logs a warning, as in 1.0.x.
+
 ## [1.0.1] - 2026-10-09
 
 ### Changed
