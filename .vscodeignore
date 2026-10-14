@@ -17,6 +17,8 @@ eslint.config.js
 .prettierignore
 CLAUDE.md
 README.md
+# Internal scoping/roadmap document (French) — not part of the product
+V1-SCOPE.md
 
 # Démo : config locale, journaux et scripts de provisioning
 logs/**
