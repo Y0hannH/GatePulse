@@ -13,6 +13,7 @@ import {
   listRoutineParameters,
   listSchemaObjects,
   SCHEMA_OBJECTS_PAGE_SIZE,
+  schemaObjectsPageQuery,
   toSchemaObjectType,
 } from '../src/core/runQuery';
 import type { ScenarioContext } from '../src/core/scenarios';
@@ -144,6 +145,69 @@ void (async () => {
     const { ctx, queries } = fakeCtx([new GatePulseError('sql', 'Incorrect syntax near OFFSET'), []]);
     await listSchemaObjects(ctx, 'c', 'db');
     expect('the fallback is the plain, unpaged query', queries[1].includes('OFFSET'), false);
+  }
+
+  console.log('--- listSchemaObjects: scoped refresh ---');
+  {
+    const q = schemaObjectsPageQuery(0, { schema: 'sales' });
+    expect(
+      'a schema scope filters both halves',
+      q.includes("TABLE_SCHEMA = N'sales'") && q.includes("ROUTINE_SCHEMA = N'sales'"),
+      true,
+    );
+  }
+  {
+    const q = schemaObjectsPageQuery(0, { schema: "o'brien", kind: 'view' });
+    expect(
+      'a views folder reads the TABLES half only, with its type and the escaped schema',
+      [
+        q.includes('INFORMATION_SCHEMA.ROUTINES'),
+        q.includes("TABLE_TYPE = 'VIEW'"),
+        q.includes("TABLE_SCHEMA = N'o''brien'"),
+        q.includes('UNION ALL'),
+      ],
+      [false, true, true, false],
+    );
+  }
+  {
+    const q = schemaObjectsPageQuery(0, { schema: 'dbo', kind: 'procedure' });
+    expect(
+      'a procedures folder reads the ROUTINES half only, and names the output columns itself',
+      [
+        q.includes('INFORMATION_SCHEMA.TABLES'),
+        q.includes("ROUTINE_TYPE = 'PROCEDURE'"),
+        q.includes('ROUTINE_SCHEMA AS schemaName'),
+      ],
+      [false, true, true],
+    );
+  }
+  expect(
+    'no scope = the whole database, as before',
+    schemaObjectsPageQuery(0).includes(' WHERE '),
+    false,
+  );
+  {
+    const { ctx, queries } = fakeCtx([new GatePulseError('sql', 'boom')]);
+    let kind: string | undefined;
+    try {
+      await listSchemaObjects(ctx, 'c', 'db', { schema: 'dbo', kind: 'function' });
+    } catch (err) {
+      kind = (err as GatePulseError).kind;
+    }
+    expect(
+      'a failing functions refresh is an error, not "tables and views" that would erase the cached functions',
+      [kind, queries.length],
+      ['sql', 1],
+    );
+  }
+  {
+    const { ctx, queries } = fakeCtx([new GatePulseError('sql', 'boom'), []]);
+    await listSchemaObjects(ctx, 'c', 'db', { schema: 'dbo' });
+    expect(
+      'a schema refresh may fall back to that schema\'s tables and views',
+      queries[1].includes("TABLE_SCHEMA = N'dbo'") && !queries[1].includes('ROUTINES'),
+      true,
+    );
   }
 
   console.log('--- listRoutineParameters ---');

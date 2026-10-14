@@ -8,6 +8,9 @@ All notable changes to GatePulse are documented here.
 - Stored procedures and functions are listed in the sidebar, under their schema, with their
   parameters (and a function's return type) one level down. They are also offered by the editor's
   autocomplete.
+- `Refresh` on right-click of a database, a schema, or a Tables / Views / Procedures / Functions
+  folder: re-reads only that part of the object list (and drops the cached columns/parameters of the
+  objects it covers) instead of clearing the whole cache.
 - `Search Objects` (magnifier on a database row, title bar, Command Palette): a search box over all
   the objects of a database across schemas; Enter opens `Select Top 100 Rows` or `Script as CREATE`.
 - `Script as CREATE` (right-click a view, procedure or function): opens the object's `CREATE`

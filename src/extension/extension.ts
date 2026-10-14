@@ -10,7 +10,7 @@ import { isSupportedSqlConnection } from '../core/fabricClient';
 import type { LogEntry, LogSink } from '../core/logger';
 import { formatEntry } from '../core/logger';
 import { ensurePipeline } from '../core/provision';
-import type { ColumnInfo, ParameterInfo, SchemaObject, ScriptableKind } from '../core/runQuery';
+import type { ColumnInfo, ListScope, ParameterInfo, SchemaObject, ScriptableKind } from '../core/runQuery';
 import {
   convertedColumnExpression,
   getCreateScript,
@@ -25,7 +25,14 @@ import type { Session } from '../core/session';
 import { createSession } from '../core/session';
 import type { PanelServices } from './panel';
 import { SqlPanel } from './panel';
-import type { ConnectionTreeItem, DatabaseTreeItem, RoutineTreeItem, TableTreeItem } from './tenantTree';
+import type {
+  ConnectionTreeItem,
+  DatabaseTreeItem,
+  ObjectGroupTreeItem,
+  RoutineTreeItem,
+  SchemaTreeItem,
+  TableTreeItem,
+} from './tenantTree';
 import { TenantTreeProvider } from './tenantTree';
 
 /** Resolves and caches the pipeline id on `session.cfg` — shared by a query run, the panel's
@@ -541,6 +548,67 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   };
 
+  /**
+   * "Refresh" on a database, a schema or a Tables/Views/Procedures/Functions folder: re-reads that
+   * part of the object list from the server and replaces it in the shared cache. Only the scope is
+   * queried — a schema refresh does not page through a 10,000-object database — and the cached
+   * columns/parameters of the objects in scope are dropped too, so a changed table shows its new
+   * columns the next time it is expanded. A *new* schema only appears with a database refresh.
+   */
+  const refreshObjects = async (
+    item?: DatabaseTreeItem | SchemaTreeItem | ObjectGroupTreeItem,
+  ): Promise<void> => {
+    if (!item) return;
+    const { tenantAlias, connectionGuid, databaseName } = item;
+    const scope: ListScope | undefined =
+      'kind' in item
+        ? { schema: item.schemaName, kind: item.kind }
+        : 'schemaName' in item
+          ? { schema: item.schemaName }
+          : undefined;
+    const label =
+      'kind' in item
+        ? `${item.schemaName} › ${item.kind}s`
+        : 'schemaName' in item
+          ? item.schemaName
+          : databaseName;
+    if (tenantAlias !== getActiveTenantAlias()) await switchToTenant(tenantAlias);
+    const key = `${connectionGuid}:${databaseName}`;
+    const inScope = (o: SchemaObject): boolean =>
+      (scope?.schema === undefined || o.schema === scope.schema) &&
+      (scope?.kind === undefined || o.type === scope.kind);
+    try {
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Window,
+          title: `GatePulse: refreshing ${label}…`,
+        },
+        async () => {
+          const s = getSession();
+          await ensurePipelineResolved(s);
+          const fresh = await listSchemaObjects(scenarioContext(s), connectionGuid, databaseName, scope);
+          const old = schemaCache.get(key);
+          // No cached list to patch (cleared meanwhile): the scoped result would be a partial list.
+          if (scope && !old) return;
+          schemaCache.set(key, scope && old ? [...old.filter((o) => !inScope(o)), ...fresh] : fresh);
+          for (const o of [...(old ?? []).filter(inScope), ...fresh]) {
+            const objectKey = `${key}:${o.schema}:${o.name}`;
+            columnsCache.delete(objectKey);
+            parametersCache.delete(objectKey);
+          }
+          persistSchemaCaches();
+        },
+      );
+    } catch (err) {
+      const error = serializeError(err);
+      getSession().logger.warn('refreshObjects.failed', `[${error.kind}] ${error.message}`);
+      void vscode.window.showErrorMessage(`GatePulse: could not refresh ${label} — ${error.message}`);
+      return;
+    }
+    SqlPanel.current?.invalidateSchema();
+    tenantTree.refresh();
+  };
+
   const OBJECT_KIND_ICON: Record<SchemaObject['type'], string> = {
     table: 'table',
     view: 'eye',
@@ -709,12 +777,16 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('gatepulse.searchObjects', (item?: DatabaseTreeItem) =>
       searchObjects(item),
     ),
+    vscode.commands.registerCommand('gatepulse.refreshObjects', (item?: DatabaseTreeItem | SchemaTreeItem | ObjectGroupTreeItem) =>
+      refreshObjects(item),
+    ),
     vscode.commands.registerCommand('gatepulse.refreshSchemaTree', () => {
       databaseCache.clear();
       schemaCache.clear();
       columnsCache.clear();
       parametersCache.clear();
       void context.globalState.update(CACHE_STORAGE_KEY, undefined);
+      SqlPanel.current?.invalidateSchema();
       tenantTree.refresh();
     }),
     // "+" on a tenant row: attach another connection to browse under it.

@@ -278,6 +278,12 @@ export class SqlPanel {
     }
   }
 
+  /** The shared object/column caches changed (a "Refresh" in the tree): the webview's own copy used
+   *  by the autocomplete is dropped and re-requested. */
+  invalidateSchema(): void {
+    void this.post({ type: 'invalidateSchema' });
+  }
+
   /** setConnectionGuid: applies a picked GUID directly to the open panel — see extension.ts's pickConnection. */
   setConnectionGuid(value: string): void {
     void this.post({ type: 'setConnectionGuid', value });

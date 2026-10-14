@@ -88,6 +88,11 @@
         "icon": "$(search)"
       },
       {
+        "command": "gatepulse.refreshObjects",
+        "title": "GatePulse: Refresh",
+        "icon": "$(refresh)"
+      },
+      {
         "command": "gatepulse.refreshSchemaTree",
         "title": "GatePulse: Refresh Schema Tree",
         "icon": "$(refresh)"
@@ -167,6 +172,10 @@
           "when": "false"
         },
         {
+          "command": "gatepulse.refreshObjects",
+          "when": "false"
+        },
+        {
           "command": "gatepulse.removeDatabase",
           "when": "false"
         },
@@ -241,6 +250,11 @@
         {
           "command": "gatepulse.searchObjects",
           "when": "view == gatepulse.tenantsView && viewItem =~ /^database/",
+          "group": "1_actions"
+        },
+        {
+          "command": "gatepulse.refreshObjects",
+          "when": "view == gatepulse.tenantsView && (viewItem =~ /^database/ || viewItem == schema || viewItem == object-group)",
           "group": "1_actions"
         },
         {

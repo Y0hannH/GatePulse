@@ -660,6 +660,12 @@ CHANGELOG + guide + `.vsix`), publiée à la main.
    `Select Top 100` (table/vue) ou `Script as CREATE` (procédure/fonction). Le filtre natif de
    l'arbre VS Code ne convient pas : il ne connaît que les nœuds déjà dépliés. Non fait : « révéler
    dans l'arbre » (`TreeView.reveal` demande `getParent` + des `id` stables sur tous les niveaux).
+   **Ajout du 2026-10-14 (1.1.0) : `Refresh` ciblé** — `gatepulse.refreshObjects`, clic droit sur
+   base / schéma / dossier de type. Relit uniquement la portée (`ListScope` : schéma et/ou type,
+   `listSchemaObjects(…, scope)`), fusionne dans le cache partagé et purge colonnes/paramètres des
+   objets concernés ; prévient aussi le panel (`invalidateSchema`) pour l'autocomplétion. Un nouveau
+   schéma n'apparaît qu'avec un refresh de la base. Pas de repli « tables/vues » pour un dossier
+   Procédures/Fonctions (il effacerait le cache de ce dossier).
 3. ⏳ **`Script as CREATE` pour les tables, puis script d'un schéma / d'une base — à faire.**
    - *Tables* : aucune définition stockée, le DDL est à reconstruire depuis `sys.columns` (types,
      longueurs/précisions, nullabilité, identity, colonnes calculées, défauts), `sys.key_constraints`

@@ -144,19 +144,48 @@ export const SCHEMA_OBJECTS_PAGE_SIZE = 4000;
  *  database to browse in a tree, and a bug must not turn into an endless run of pipeline jobs. */
 const MAX_SCHEMA_OBJECT_PAGES = 50;
 
+/** Narrows a listing to one schema and/or one kind — what "Refresh" on a schema or on a Tables /
+ *  Views / Procedures / Functions folder re-reads, instead of the whole database. */
+export interface ListScope {
+  schema?: string;
+  kind?: SchemaObjectType;
+}
+
 /** Tables, views, procedures and functions in one query — each discovery is a real pipeline run,
  *  worth minimizing. INFORMATION_SCHEMA is standard SQL: works the same across the databases of one
  *  SQL Server instance, unlike sys.databases which is instance-wide. TABLE_TYPE / ROUTINE_TYPE tell
  *  the kinds apart (BASE TABLE, VIEW, PROCEDURE, FUNCTION). The ORDER BY is total (schema, name,
- *  type) so that OFFSET paging never skips or repeats a row between two pages. */
-export function schemaObjectsPageQuery(offset: number): string {
+ *  type) so that OFFSET paging never skips or repeats a row between two pages. A `scope` drops the
+ *  branches and rows it excludes. */
+export function schemaObjectsPageQuery(offset: number, scope: ListScope = {}): string {
+  const schemaFilter = (column: string) =>
+    scope.schema === undefined ? [] : [`${column} = N${sqlStringLiteral(scope.schema)}`];
+  const where = (conditions: string[]) => (conditions.length ? ` WHERE ${conditions.join(' AND ')}` : '');
+  const branches: string[] = [];
+  if (scope.kind === undefined || scope.kind === 'table' || scope.kind === 'view') {
+    const kindFilter =
+      scope.kind === undefined ? [] : [`TABLE_TYPE = '${scope.kind === 'view' ? 'VIEW' : 'BASE TABLE'}'`];
+    branches.push(
+      'SELECT TABLE_SCHEMA AS schemaName, TABLE_NAME AS objectName, TABLE_TYPE AS objectType ' +
+        `FROM INFORMATION_SCHEMA.TABLES${where([...schemaFilter('TABLE_SCHEMA'), ...kindFilter])}`,
+    );
+  }
+  if (scope.kind === undefined || scope.kind === 'procedure' || scope.kind === 'function') {
+    const kindFilter =
+      scope.kind === undefined
+        ? []
+        : [`ROUTINE_TYPE = '${scope.kind === 'procedure' ? 'PROCEDURE' : 'FUNCTION'}'`];
+    // The first branch names the columns; when it is this one, name them here.
+    const head = branches.length
+      ? 'SELECT ROUTINE_SCHEMA, ROUTINE_NAME, ROUTINE_TYPE'
+      : 'SELECT ROUTINE_SCHEMA AS schemaName, ROUTINE_NAME AS objectName, ROUTINE_TYPE AS objectType';
+    branches.push(
+      `${head} FROM INFORMATION_SCHEMA.ROUTINES${where([...schemaFilter('ROUTINE_SCHEMA'), ...kindFilter])}`,
+    );
+  }
   return (
-    'SELECT schemaName, objectName, objectType FROM (' +
-    'SELECT TABLE_SCHEMA AS schemaName, TABLE_NAME AS objectName, TABLE_TYPE AS objectType ' +
-    'FROM INFORMATION_SCHEMA.TABLES ' +
-    'UNION ALL ' +
-    'SELECT ROUTINE_SCHEMA, ROUTINE_NAME, ROUTINE_TYPE FROM INFORMATION_SCHEMA.ROUTINES' +
-    ') AS o ORDER BY schemaName, objectName, objectType ' +
+    `SELECT schemaName, objectName, objectType FROM (${branches.join(' UNION ALL ')}) AS o ` +
+    'ORDER BY schemaName, objectName, objectType ' +
     `OFFSET ${offset} ROWS FETCH NEXT ${SCHEMA_OBJECTS_PAGE_SIZE} ROWS ONLY`
   );
 }
@@ -164,9 +193,18 @@ export function schemaObjectsPageQuery(offset: number): string {
 /** The pre-1.1 query: tables and views only, one page, no OFFSET. Kept as the fallback when the
  *  routines/paging query is rejected by an engine that lacks INFORMATION_SCHEMA.ROUTINES or OFFSET —
  *  the tree must never lose its tables to it. */
-const LIST_TABLES_AND_VIEWS_QUERY =
-  'SELECT TABLE_SCHEMA AS schemaName, TABLE_NAME AS objectName, TABLE_TYPE AS objectType ' +
-  'FROM INFORMATION_SCHEMA.TABLES ORDER BY TABLE_SCHEMA, TABLE_NAME';
+function tablesAndViewsQuery(scope: ListScope): string {
+  const conditions = [
+    ...(scope.schema === undefined ? [] : [`TABLE_SCHEMA = N${sqlStringLiteral(scope.schema)}`]),
+    ...(scope.kind === 'table' ? [`TABLE_TYPE = 'BASE TABLE'`] : []),
+    ...(scope.kind === 'view' ? [`TABLE_TYPE = 'VIEW'`] : []),
+  ];
+  return (
+    'SELECT TABLE_SCHEMA AS schemaName, TABLE_NAME AS objectName, TABLE_TYPE AS objectType ' +
+    `FROM INFORMATION_SCHEMA.TABLES${conditions.length ? ` WHERE ${conditions.join(' AND ')}` : ''} ` +
+    'ORDER BY TABLE_SCHEMA, TABLE_NAME'
+  );
+}
 
 /** Failures worth retrying with the simple query. Auth/network/timeout/... would fail the same way. */
 const ROUTINES_FALLBACK_KINDS: ReadonlySet<ErrorKind> = new Set<ErrorKind>([
@@ -186,11 +224,13 @@ export function toSchemaObjectType(raw: unknown): SchemaObjectType {
 
 /** Lists tables, views, procedures and functions of one database, for the sidebar's schema tree and
  *  the editor's autocomplete (V1-SCOPE.md §4, point D). Pages through the catalog, so a database with
- *  more objects than the Lookup's 5,000-row cap is listed in full (one pipeline run per page). */
+ *  more objects than the Lookup's 5,000-row cap is listed in full (one pipeline run per page).
+ *  With a `scope`, only that schema / kind is read (the tree's per-node "Refresh"). */
 export async function listSchemaObjects(
   ctx: ScenarioContext,
   connectionGuid: string,
   databaseName: string,
+  scope: ListScope = {},
 ): Promise<SchemaObject[]> {
   const rows: Record<string, unknown>[] = [];
   try {
@@ -207,7 +247,7 @@ export async function listSchemaObjects(
         {
           connectionGuid,
           databaseName,
-          query: schemaObjectsPageQuery(page * SCHEMA_OBJECTS_PAGE_SIZE),
+          query: schemaObjectsPageQuery(page * SCHEMA_OBJECTS_PAGE_SIZE, scope),
         },
         'list-objects',
       );
@@ -216,6 +256,9 @@ export async function listSchemaObjects(
     }
   } catch (err) {
     if (!(err instanceof GatePulseError) || !ROUTINES_FALLBACK_KINDS.has(err.kind)) throw err;
+    // Nothing to fall back to for a procedures/functions folder: tables and views would be the wrong
+    // answer to "refresh the procedures", and replacing the cached ones with them would erase them.
+    if (scope.kind === 'procedure' || scope.kind === 'function') throw err;
     ctx.logger.warn(
       'schema.routinesUnavailable',
       `Listing procedures and functions failed (${err.message}); listing tables and views only`,
@@ -224,7 +267,7 @@ export async function listSchemaObjects(
     rows.push(
       ...(await runDiscoveryQuery(
         ctx,
-        { connectionGuid, databaseName, query: LIST_TABLES_AND_VIEWS_QUERY },
+        { connectionGuid, databaseName, query: tablesAndViewsQuery(scope) },
         'list-objects',
       )),
     );

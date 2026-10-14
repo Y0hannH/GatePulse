@@ -392,6 +392,11 @@
         }
         break;
       }
+      case 'invalidateSchema':
+        tablesForSchema = null;
+        columnsBySchema.clear();
+        warmTables();
+        break;
       case 'setConnectionGuid':
         manualMode = false;
         inputs.connectionGuid.value = m.value;
