@@ -71,6 +71,11 @@
         "icon": "$(play)"
       },
       {
+        "command": "gatepulse.newQuery",
+        "title": "GatePulse: New Query",
+        "icon": "$(new-file)"
+      },
+      {
         "command": "gatepulse.openTenant",
         "title": "GatePulse: Open Tenant"
       },
@@ -241,6 +246,16 @@
           "command": "gatepulse.scriptCreate",
           "when": "view == gatepulse.tenantsView && (viewItem == view || viewItem == procedure || viewItem == function)",
           "group": "1_actions"
+        },
+        {
+          "command": "gatepulse.newQuery",
+          "when": "view == gatepulse.tenantsView && viewItem =~ /^database/",
+          "group": "inline@0"
+        },
+        {
+          "command": "gatepulse.newQuery",
+          "when": "view == gatepulse.tenantsView && viewItem =~ /^database/",
+          "group": "1_actions@0"
         },
         {
           "command": "gatepulse.searchObjects",

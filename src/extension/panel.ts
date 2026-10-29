@@ -44,6 +44,8 @@ type FromWebview =
   | { type: 'showLogs' }
   | { type: 'openSettings' }
   | { type: 'openGuide' }
+  | { type: 'newTab'; connectionGuid: string; databaseName: string }
+  | { type: 'editorState'; databaseName: string; empty: boolean }
   | { type: 'switchTenant'; alias: string }
   | { type: 'addTenant' }
   | { type: 'refreshConnections' }
@@ -64,9 +66,31 @@ interface HistoryEntry {
 const HISTORY_KEY = 'gatepulse.history';
 const HISTORY_CAP = 50;
 
+const PANEL_TITLE = 'GatePulse SQL';
+
 export class SqlPanel {
-  static current: SqlPanel | undefined;
+  /** Every open query tab. Each one is its own webview (own editor, own results, own run). */
+  private static readonly panels = new Set<SqlPanel>();
+  private static lastActive: SqlPanel | undefined;
   private controller: AbortController | undefined;
+  private disposed = false;
+  /** Reported by the webview: lets "Select Top 100" reuse an untouched tab instead of opening another. */
+  private editorEmpty = true;
+
+  /** The tab the user was last in (or, failing that, the most recently opened one). */
+  static get current(): SqlPanel | undefined {
+    if (SqlPanel.lastActive && SqlPanel.panels.has(SqlPanel.lastActive)) return SqlPanel.lastActive;
+    return [...SqlPanel.panels].pop();
+  }
+
+  /** Same entry point for every tab: a tenant switch or a settings change reaches all of them. */
+  static refreshAllDefaults(): void {
+    for (const p of SqlPanel.panels) p.refreshDefaults();
+  }
+
+  static invalidateAllSchemas(): void {
+    for (const p of SqlPanel.panels) p.invalidateSchema();
+  }
   /** UI-level dedup only (avoid two 'databasesLoading' messages in flight) — the actual fetch and
    *  its cache live in extension.ts, shared with the sidebar tree. */
   private readonly databasesInFlight = new Set<string>();
@@ -76,26 +100,53 @@ export class SqlPanel {
    *  message listener isn't attached yet — 'ready' re-sends whatever is still pending here. */
   private pendingPrefill: { connectionGuid: string; databaseName: string; query: string } | undefined;
 
+  /** Brings the current tab forward, or opens the first one. */
   static show(
     context: vscode.ExtensionContext,
     services: PanelServices,
     channel: vscode.OutputChannel,
-  ): void {
-    if (SqlPanel.current) {
-      SqlPanel.current.panel.reveal();
-      return;
+  ): SqlPanel {
+    const existing = SqlPanel.current;
+    if (existing) {
+      existing.panel.reveal();
+      return existing;
     }
+    return SqlPanel.create(context, services, channel);
+  }
+
+  /** Always opens a new tab (next to the current one, so tabs stay grouped). */
+  static create(
+    context: vscode.ExtensionContext,
+    services: PanelServices,
+    channel: vscode.OutputChannel,
+  ): SqlPanel {
+    const beside = SqlPanel.current?.panel.viewColumn;
     const panel = vscode.window.createWebviewPanel(
       'gatepulse.sql',
-      'GatePulse SQL',
-      vscode.ViewColumn.One,
+      PANEL_TITLE,
+      beside ?? vscode.ViewColumn.One,
       {
         enableScripts: true,
         retainContextWhenHidden: true,
         localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')],
       },
     );
-    SqlPanel.current = new SqlPanel(panel, context, services, channel);
+    return new SqlPanel(panel, context, services, channel);
+  }
+
+  /** For a command that fills in a query: reuses the current tab when its editor is still empty,
+   *  otherwise opens a new one — never overwrites what the user is writing. */
+  static forNewQuery(
+    context: vscode.ExtensionContext,
+    services: PanelServices,
+    channel: vscode.OutputChannel,
+  ): SqlPanel {
+    const existing = SqlPanel.current;
+    if (existing?.editorEmpty) {
+      existing.panel.reveal();
+      return existing;
+    }
+    return SqlPanel.create(context, services, channel);
   }
 
   private constructor(
@@ -104,10 +155,17 @@ export class SqlPanel {
     private readonly services: PanelServices,
     private readonly channel: vscode.OutputChannel,
   ) {
+    SqlPanel.panels.add(this);
+    SqlPanel.lastActive = this;
     panel.webview.html = this.html();
+    panel.onDidChangeViewState((e) => {
+      if (e.webviewPanel.active) SqlPanel.lastActive = this;
+    });
     panel.onDidDispose(() => {
+      this.disposed = true;
       this.controller?.abort();
-      SqlPanel.current = undefined;
+      SqlPanel.panels.delete(this);
+      if (SqlPanel.lastActive === this) SqlPanel.lastActive = undefined;
     });
     panel.webview.onDidReceiveMessage((m: FromWebview) =>
       // onMessage's own handlers already catch what they expect to fail (listDatabases, run...);
@@ -123,6 +181,7 @@ export class SqlPanel {
   /** Prefills the editor from outside (schema-tree table click) — 'ready' flushes this if the
    *  webview wasn't loaded yet when this was called (see `pendingPrefill`). */
   prefillQuery(connectionGuid: string, databaseName: string, query: string): void {
+    this.editorEmpty = !query.trim(); // known now, without waiting for the webview's report
     this.pendingPrefill = { connectionGuid, databaseName, query };
     void this.post({ type: 'prefillQuery', connectionGuid, databaseName, query });
   }
@@ -168,6 +227,8 @@ export class SqlPanel {
   }
 
   private post(message: unknown): Thenable<boolean> {
+    // A tab closed mid-run (or mid-prefill) must not throw "Webview is disposed" from a late post.
+    if (this.disposed) return Promise.resolve(false);
     return this.panel.webview.postMessage(message);
   }
 
@@ -179,7 +240,8 @@ export class SqlPanel {
   private async addHistory(entry: HistoryEntry): Promise<void> {
     const next = [entry, ...this.getHistory()].slice(0, HISTORY_CAP);
     await this.context.globalState.update(HISTORY_KEY, next);
-    void this.post({ type: 'history', entries: next });
+    // The history is shared by every tab.
+    for (const p of SqlPanel.panels) void p.post({ type: 'history', entries: next });
   }
 
   private async onMessage(m: FromWebview): Promise<void> {
@@ -199,6 +261,19 @@ export class SqlPanel {
         return;
       case 'openGuide':
         await vscode.commands.executeCommand('gatepulse.openGuide');
+        return;
+      case 'newTab':
+        // Same connection and database as this tab, empty editor.
+        await vscode.commands.executeCommand('gatepulse.newQuery', {
+          tenantAlias: this.services.getActiveTenantAlias(),
+          connectionGuid: m.connectionGuid.trim(),
+          databaseName: m.databaseName.trim(),
+        });
+        return;
+      case 'editorState':
+        this.editorEmpty = m.empty;
+        // The tab title carries the database so several tabs can be told apart.
+        this.panel.title = m.databaseName.trim() ? `${PANEL_TITLE} · ${m.databaseName.trim()}` : PANEL_TITLE;
         return;
       case 'openSettings':
         await vscode.commands.executeCommand('workbench.action.openSettings', 'gatepulse');
@@ -397,6 +472,7 @@ export class SqlPanel {
       <span class="brand-title">GatePulse</span>
     </div>
     <div class="topbar-actions">
+      <button id="newTab" class="icon-btn ghost" title="New query tab (same connection and database)"><i class="codicon codicon-new-file"></i></button>
       <button id="openGuide" class="icon-btn ghost" title="Open the GatePulse guide"><i class="codicon codicon-book"></i></button>
       <button id="showLogs" class="icon-btn ghost" title="Show GatePulse logs"><i class="codicon codicon-output"></i></button>
       <button id="openSettings" class="icon-btn ghost" title="GatePulse settings"><i class="codicon codicon-gear"></i></button>
@@ -424,10 +500,10 @@ export class SqlPanel {
     <div class="ctx">
       <label for="databaseName"><i class="codicon codicon-server"></i> Database</label>
       <div class="with-button">
-        <input id="databaseName" list="databaseListOptions" spellcheck="false" placeholder="master">
-        <datalist id="databaseListOptions"></datalist>
+        <select id="databaseSelect"></select>
         <button id="refreshDatabases" class="icon-btn secondary" title="Refresh the database list"><i class="codicon codicon-refresh"></i></button>
       </div>
+      <input id="databaseName" class="hidden" spellcheck="false" placeholder="Database name (default: master)">
       <div id="databaseHint" class="field-hint hidden"></div>
     </div>
   </section>

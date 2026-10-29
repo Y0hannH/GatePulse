@@ -2,6 +2,20 @@
 
 All notable changes to GatePulse are documented here.
 
+## [Unreleased]
+
+### Added
+- Several query tabs: each one has its own editor, connection, database and results, and can run
+  its own query. `New Query` (icon on a database row, right-click, Command Palette, or the new-tab
+  button in the panel header) opens a tab straight on that database. The tab title shows the
+  database. `Select Top 100 Rows` reuses a tab whose editor is empty and opens a new one otherwise,
+  so it no longer overwrites a query being written.
+
+### Changed
+- The *Database* field of the query panel is a real dropdown over the listed databases (no more
+  clearing a text field to switch). *Default (master)* and *Enter a name manually…* remain available
+  for a database that is not listed or when the list cannot be loaded.
+
 ## [1.1.0] - 2026-10-14
 
 ### Added
