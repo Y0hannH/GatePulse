@@ -57,7 +57,7 @@ Consequences worth remembering:
    - the **workspace ID** (the Fabric workspace GUID — visible in the workspace URL).
 2. **Add a connection.** Click the **+** on the tenant row (`Add Connection to Tenant`). Pick one of the connections Fabric lists, or enter a connection GUID by hand. The first connection you add becomes the tenant's **default**.
 3. **Open the panel.** Click the tenant row, or the ▶ button in the sidebar title.
-4. **Pick a database** in the *Database* field (the list is filled from the server) and type a query.
+4. **Pick a database** in the *Database* dropdown (the list is filled from the server) and type a query. Or skip this step: the **New Query** icon on a database row opens a query tab already on that database.
 5. Press **Run** or `Ctrl+Enter`.
 
 The first run in a workspace **creates the generic pipeline automatically** (named *GatePulse — Generic SQL Lookup Pipeline*) and tells you so with a notification. Later runs — yours or a colleague's — reuse it. GatePulse never deletes or duplicates pipelines on its own.
@@ -102,7 +102,7 @@ The top strip tells you **where you are**:
 |---|---|
 | **Tenant** | Active tenant, shown as `alias · default connection name`. Changing it switches tenant (and reloads that tenant's defaults). **+** adds a tenant. |
 | **Connection** | The Fabric connection the query goes through, by name. *Enter a GUID manually…* is the fallback if the list is unavailable or the connection is not in it. ↻ re-lists connections. |
-| **Database** | The database the query runs in. Type or pick; ↻ refreshes the list. Databases you added by hand are included. |
+| **Database** | The database the query runs in, picked from a dropdown; ↻ refreshes the list. Databases you added by hand are included. *Default (master)* uses the connection's default catalog; *Enter a name manually…* is the fallback for a database that is not listed (it is also what you get when the list cannot be loaded). |
 
 Below is the **editor** (CodeMirror):
 
@@ -117,6 +117,16 @@ Below is the **editor** (CodeMirror):
 - The editor can be resized by dragging its bottom edge. The panel remembers your connection, database and query across reloads.
 
 **Query history** (below the results) keeps your last 50 queries — text, tenant, connection, database and success flag, **never the results**. Click an entry to load it into the editor *without* running; click its ▶ to load **and** run. Entries from another tenant switch to that tenant first.
+
+### Several query tabs
+
+Each tab is independent: its own connection, database, query and results, and it can run while another tab runs. Open one with:
+
+- the **New Query** icon (or right-click) on a database row — the tab opens on that database;
+- the **new tab** button in the panel header — same connection and database as the current tab, empty editor;
+- **GatePulse: New Query** in the Command Palette.
+
+The tab title shows its database. `Select Top 100 Rows` and `Search Objects` fill an untouched (empty) tab, or open a new one if the current tab already holds a query — they never overwrite what you are writing. Switching tenant applies to every open tab; the query history is shared.
 
 ## 5. Results
 
@@ -216,6 +226,7 @@ All commands are in the Command Palette under **GatePulse:**.
 | Command | What it does |
 |---|---|
 | Open SQL Panel | Opens (or reveals) the query panel. |
+| New Query | Opens a new query tab (on a database when used from its row in the tree). |
 | Add Tenant / Switch Tenant | Create a tenant entry / change the active one. |
 | Add Connection to Tenant | Attach a Fabric connection to a tenant (also the **+** on the tenant row). |
 | Remove Connection From Tenant | Detach a connection (right-click a connection). |

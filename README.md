@@ -54,7 +54,7 @@ GatePulse is not on the Marketplace. Build the `.vsix` and install it:
 ```bash
 npm install
 npm run vsix
-code --install-extension gatepulse-1.0.1.vsix
+code --install-extension gatepulse-1.2.0.vsix
 ```
 
 To try it from source instead, open this folder in VS Code and press **F5** to start an Extension Development Host.

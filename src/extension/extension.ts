@@ -257,7 +257,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const invalidateSession = (): void => {
     session = undefined; // rebuilt lazily; tokens are in memory, so sign-in happens again
     cachedConnections = undefined;
-    SqlPanel.current?.refreshDefaults();
+    SqlPanel.refreshAllDefaults();
     tenantTree.refresh();
   };
 
@@ -511,17 +511,28 @@ export function activate(context: vscode.ExtensionContext): void {
   const selectTop100For = async (t: ObjectTarget): Promise<void> => {
     const { tenantAlias, connectionGuid, databaseName, schemaName, name } = t;
     if (tenantAlias !== getActiveTenantAlias()) await switchToTenant(tenantAlias);
-    SqlPanel.show(context, panelServices, channel);
+    // An untouched tab is reused; one with a query in it is left alone and a new tab is opened.
+    const panel = SqlPanel.forNewQuery(context, panelServices, channel);
     // Immediate `*` first — the exclusion check is itself a real query and can take a few seconds;
     // no reason to leave the panel empty that whole time when a plain SELECT * works right away.
     // Silently upgraded to an explicit column list moments later if one needs excluding.
-    SqlPanel.current?.prefillQuery(
+    panel.prefillQuery(
       connectionGuid,
       databaseName,
       `SELECT TOP 100 * FROM ${sqlIdentifier(schemaName)}.${sqlIdentifier(name)}`,
     );
     const refined = await buildTableQuery(connectionGuid, databaseName, schemaName, name);
-    SqlPanel.current?.prefillQuery(connectionGuid, databaseName, refined);
+    panel.prefillQuery(connectionGuid, databaseName, refined);
+  };
+
+  /** "New Query": a new tab on one database, empty editor. From the palette (no database given) it
+   *  opens on the active tenant's defaults. */
+  const newQueryFor = async (
+    target?: { tenantAlias: string; connectionGuid: string; databaseName: string },
+  ): Promise<void> => {
+    if (target && target.tenantAlias !== getActiveTenantAlias()) await switchToTenant(target.tenantAlias);
+    const panel = SqlPanel.create(context, panelServices, channel);
+    if (target) panel.prefillQuery(target.connectionGuid, target.databaseName, '');
   };
 
   const scriptCreateFor = async (t: ObjectTarget, kind: ScriptableKind): Promise<void> => {
@@ -605,7 +616,7 @@ export function activate(context: vscode.ExtensionContext): void {
       void vscode.window.showErrorMessage(`GatePulse: could not refresh ${label} — ${error.message}`);
       return;
     }
-    SqlPanel.current?.invalidateSchema();
+    SqlPanel.invalidateAllSchemas();
     tenantTree.refresh();
   };
 
@@ -744,6 +755,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('gatepulse.openPanel', () =>
       SqlPanel.show(context, panelServices, channel),
     ),
+    // Icon on a database row, the panel's "new tab" button, or the palette: always a new tab.
+    vscode.commands.registerCommand('gatepulse.newQuery', (item?: DatabaseTreeItem) => newQueryFor(item)),
     // Sidebar tree row click: one step from "pick a tenant" to "query it", no palette involved.
     vscode.commands.registerCommand('gatepulse.openTenant', async (alias: string) => {
       if (alias !== getActiveTenantAlias()) await switchToTenant(alias);
@@ -786,7 +799,7 @@ export function activate(context: vscode.ExtensionContext): void {
       columnsCache.clear();
       parametersCache.clear();
       void context.globalState.update(CACHE_STORAGE_KEY, undefined);
-      SqlPanel.current?.invalidateSchema();
+      SqlPanel.invalidateAllSchemas();
       tenantTree.refresh();
     }),
     // "+" on a tenant row: attach another connection to browse under it.

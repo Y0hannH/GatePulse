@@ -11,6 +11,7 @@
   };
   const tenantSelect = /** @type {HTMLSelectElement} */ ($('tenantSelect'));
   const connectionSelect = /** @type {HTMLSelectElement} */ ($('connectionSelect'));
+  const databaseSelect = /** @type {HTMLSelectElement} */ ($('databaseSelect'));
 
   const ERROR_TITLES = {
     config: ['Invalid configuration', 'Check the GatePulse settings.'],
@@ -81,12 +82,25 @@
     }
   });
 
-  const persist = () =>
+  // The extension only needs to know the database (tab title) and whether the editor is empty
+  // (so "Select Top 100" can reuse an untouched tab) — sent when either changes, not per keystroke.
+  let lastReported = '';
+  const reportEditorState = () => {
+    const databaseName = inputs.databaseName.value.trim();
+    const empty = cm.getValue().trim() === '';
+    const key = `${empty}:${databaseName}`;
+    if (key === lastReported) return;
+    lastReported = key;
+    vscode.postMessage({ type: 'editorState', databaseName, empty });
+  };
+  const persist = () => {
     vscode.setState({
       connectionGuid: inputs.connectionGuid.value,
       databaseName: inputs.databaseName.value,
       query: cm.getValue(),
     });
+    reportEditorState();
+  };
   inputs.connectionGuid.addEventListener('input', persist);
   inputs.databaseName.addEventListener('input', persist);
   cm.on('change', persist);
@@ -126,6 +140,7 @@
     inputs.connectionGuid.value = connectionSelect.value;
     onConnectionChanged();
   });
+  $('newTab').addEventListener('click', () => vscode.postMessage({ type: 'newTab', ...conn() }));
   $('openGuide').addEventListener('click', () => vscode.postMessage({ type: 'openGuide' }));
   $('showLogs').addEventListener('click', (e) => (e.preventDefault(), vscode.postMessage({ type: 'showLogs' })));
   $('openSettings').addEventListener('click', (e) => (e.preventDefault(), vscode.postMessage({ type: 'openSettings' })));
@@ -135,7 +150,20 @@
   // ---------------------------------------------------------------- database picker
   // Fired on blur/commit (not every keystroke) so a half-typed GUID never triggers a run.
   inputs.connectionGuid.addEventListener('change', onConnectionChanged);
-  inputs.databaseName.addEventListener('change', () => warmTables());
+  inputs.databaseName.addEventListener('change', () => (persist(), warmTables()));
+  databaseSelect.addEventListener('change', () => {
+    if (databaseSelect.value === MANUAL) {
+      databaseManual = true;
+      syncDatabaseUI();
+      inputs.databaseName.focus();
+      return;
+    }
+    databaseManual = false;
+    inputs.databaseName.value = databaseSelect.value;
+    persist();
+    syncDatabaseUI();
+    warmTables();
+  });
   $('refreshDatabases').addEventListener('click', () => requestDatabases(true));
 
   function onConnectionChanged() {
@@ -164,6 +192,32 @@
     connectionSelect.replaceChildren(...options);
     connectionSelect.value = showManual ? MANUAL : guid || '';
     inputs.connectionGuid.classList.toggle('hidden', !showManual);
+    syncDatabaseUI();
+  }
+
+  // ---------------------------------------------------------------- database dropdown
+  // A real <select> over the databases listed for the connection: picking one never requires
+  // clearing a text field first. The text input below it is only the manual fallback (list
+  // unavailable, or a database that isn't listed) and the holder of the value either way.
+  let databaseNames = [];
+  let databasesGuid = ''; // connection the names above were listed for
+  let databasesFailed = false;
+  let databaseManual = false;
+
+  function syncDatabaseUI() {
+    const guid = inputs.connectionGuid.value.trim();
+    const names = databasesGuid.toLowerCase() === guid.toLowerCase() ? databaseNames : [];
+    const failed = databasesFailed && databasesGuid.toLowerCase() === guid.toLowerCase();
+    const value = inputs.databaseName.value.trim();
+    const showManual = databaseManual || failed;
+    const options = [el('option', { value: '' }, 'Default (master)')];
+    for (const n of names) options.push(el('option', { value: n }, n));
+    if (value && !names.some((n) => n.toLowerCase() === value.toLowerCase())) options.push(el('option', { value }, value));
+    options.push(el('option', { value: MANUAL }, failed ? 'Database list unavailable — enter a name' : 'Enter a name manually…'));
+    databaseSelect.replaceChildren(...options);
+    databaseSelect.value = showManual ? MANUAL : value;
+    inputs.databaseName.classList.toggle('hidden', !showManual);
+    reportEditorState(); // every programmatic change of the database ends up here
   }
 
   function requestDatabases(force) {
@@ -183,8 +237,11 @@
     /** @type {HTMLButtonElement} */ ($('refreshDatabases')).disabled = loading;
   }
 
-  function renderDatabaseOptions(names) {
-    $('databaseListOptions').replaceChildren(...names.map((n) => el('option', { value: n })));
+  function renderDatabaseOptions(guid, names, failed) {
+    databasesGuid = guid;
+    databaseNames = names;
+    databasesFailed = failed;
+    syncDatabaseUI();
   }
 
   // ---------------------------------------------------------------- autocomplete
@@ -359,7 +416,10 @@
         }
         tenantInitialized = true;
         currentTenantAlias = m.activeTenantAlias;
-        if (isSwitch) manualMode = false;
+        if (isSwitch) {
+          manualMode = false;
+          databaseManual = false;
+        }
         syncConnectionUI();
 
         renderTenants(m.tenants, m.activeTenantAlias);
@@ -422,7 +482,7 @@
       case 'databases':
         if (m.connectionGuid !== inputs.connectionGuid.value.trim()) break; // stale: field changed meanwhile
         setDatabasesLoading(false);
-        renderDatabaseOptions(m.names);
+        renderDatabaseOptions(m.connectionGuid, m.names, !!m.error);
         $('databaseHint').classList.toggle('hidden', !m.error);
         $('databaseHint').textContent = m.error ? 'Database list unavailable — type the name' : '';
         break;

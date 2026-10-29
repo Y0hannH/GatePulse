@@ -118,7 +118,7 @@ button:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
   font-size: 0.74em; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
   color: var(--gp-muted); margin-bottom: 6px;
 }
-.ctx input#connectionGuid { margin-top: 6px; width: 100%; }
+.ctx input#connectionGuid, .ctx input#databaseName { margin-top: 6px; width: 100%; }
 
 .banner {
   padding: 10px 14px; margin-bottom: 14px; border-radius: var(--gp-radius);

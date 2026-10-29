@@ -666,6 +666,12 @@ CHANGELOG + guide + `.vsix`), publiée à la main.
    objets concernés ; prévient aussi le panel (`invalidateSchema`) pour l'autocomplétion. Un nouveau
    schéma n'apparaît qu'avec un refresh de la base. Pas de repli « tables/vues » pour un dossier
    Procédures/Fonctions (il effacerait le cache de ce dossier).
+   **Ajout du 2026-10-29 (1.2.0) : onglets de requête** — `SqlPanel` n'est plus un singleton (un
+   webview par onglet, éditeur/connexion/base/résultats propres). `gatepulse.newQuery` (icône sur une
+   base, bouton du panel, palette) ouvre toujours un onglet sur la base ; `Select Top 100` et
+   `Search Objects` réutilisent l'onglet courant s'il est vide, sinon en ouvrent un (plus d'écrasement
+   d'une requête en cours). Le champ Base devient un vrai `<select>` (saisie manuelle en repli).
+   Tenant, caches et historique restent partagés entre onglets (un seul tenant actif).
 3. ⏳ **`Script as CREATE` pour les tables, puis script d'un schéma / d'une base — à faire.**
    - *Tables* : aucune définition stockée, le DDL est à reconstruire depuis `sys.columns` (types,
      longueurs/précisions, nullabilité, identity, colonnes calculées, défauts), `sys.key_constraints`
