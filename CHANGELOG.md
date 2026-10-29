@@ -2,7 +2,7 @@
 
 All notable changes to GatePulse are documented here.
 
-## [Unreleased]
+## [1.2.0] - 2026-10-29
 
 ### Added
 - Several query tabs: each one has its own editor, connection, database and results, and can run
