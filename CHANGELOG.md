@@ -2,7 +2,7 @@
 
 All notable changes to GatePulse are documented here.
 
-## [Unreleased]
+## [1.2.1] - 2026-11-02
 
 ### Fixed
 - Typing in the middle of an existing query no longer erases the text that follows. The editor
