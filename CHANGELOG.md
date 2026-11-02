@@ -2,6 +2,13 @@
 
 All notable changes to GatePulse are documented here.
 
+## [1.2.1] - 2026-11-02
+
+### Fixed
+- Typing in the middle of an existing query no longer erases the text that follows. The editor
+  could silently switch to overwrite mode (the **Insert** key, with no visible cue); that toggle is
+  now disabled.
+
 ## [1.2.0] - 2026-10-29
 
 ### Added
