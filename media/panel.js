@@ -65,6 +65,10 @@
       'Ctrl-Enter': tryRun,
       'Cmd-Enter': tryRun,
       'Ctrl-Space': 'autocomplete',
+      // CodeMirror's default Insert → overwrite mode: typed text replaces what follows, and nothing
+      // on screen shows the mode is on (the vendored CSS leaves the overwrite cursor unstyled). Easy
+      // to hit by accident, and VS Code's own editors don't toggle it here either — disabled.
+      Insert: false,
     },
     hintOptions: { hint: gatepulseHint, completeSingle: false },
   });
